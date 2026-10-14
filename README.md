@@ -22,7 +22,7 @@ Run it from the project directory so the relative paths to the placeholder SVG a
 ## Project layout
 
 - `src/app.rs` starts the libadwaita application and creates its window.
-- `src/ui/` contains the header, navigation, responsive discovery page, carousel, and cards.
+- `src/ui/` contains the header, navigation, responsive discovery page, featured carousel, and a nine-category grid.
 - `src/data.rs` defines sample podcasts and categories.
 - `assets/artwork/` contains original local SVG placeholder art.
 - `assets/style.css` adds restrained styling on top of the active Adwaita light or dark theme.
@@ -32,6 +32,8 @@ Run it from the project directory so the relative paths to the placeholder SVG a
 The shell uses GTK4 through gtk4-rs 0.9 and libadwaita through libadwaita-rs 0.7. These API generations work together and keep the Rust compiler baseline modest. Playback, Podcast Index, RSS networking, SQLite, GSettings, and MPRIS are planned for later phases and are intentionally absent from this shell.
 
 The proposed application ID `io.github.elite.Podcasts` is temporary. Confirm a final reverse-DNS ID before packaging or publishing.
+
+Trending Podcasts, Top Shows, Recently Updated, and podcast cards are planned for a later discovery pass.
 
 ## License
 

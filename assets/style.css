@@ -1,20 +1,62 @@
-.featured-panel {
-  background: @card_bg_color;
+.shell-header {
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
-.featured-panel picture {
-  border-radius: 16px 16px 0 0;
-}
-.category-tile {
+
+.featured-frame {
   border-radius: 14px;
 }
-.category-purple { background: alpha(#9141ac, 0.12); }
-.category-blue { background: alpha(#3584e4, 0.12); }
-.category-orange { background: alpha(#e66100, 0.12); }
-.category-green { background: alpha(#3a944a, 0.12); }
-.category-pink { background: alpha(#c061cb, 0.12); }
-.category-teal { background: alpha(#2190a4, 0.12); }
-.category-red { background: alpha(#c01c28, 0.12); }
-.category-yellow { background: alpha(#c88800, 0.12); }
-.podcast-card picture {
+
+.featured-panel {
+  color: white;
+}
+
+.hero-plum { background: #542137; }
+.hero-green { background: #247e69; }
+.hero-blue { background: #354975; }
+
+.featured-artwork {
   border-radius: 12px;
+  box-shadow: 0 3px 10px alpha(black, 0.24);
+}
+
+.hero-description {
+  color: alpha(white, 0.86);
+}
+
+.hero-arrow {
+  color: white;
+}
+
+.pagination-dots {
+  opacity: 0.55;
+}
+
+.category-tile {
+  color: white;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 2px 5px alpha(black, 0.14);
+}
+
+.category-purple { background-image: linear-gradient(to bottom, #754d9b, #603c82); }
+.category-blue { background-image: linear-gradient(to bottom, #3579ba, #28669f); }
+.category-orange { background-image: linear-gradient(to bottom, #b96331, #9f4e24); }
+.category-green { background-image: linear-gradient(to bottom, #298768, #1f7257); }
+.category-pink { background-image: linear-gradient(to bottom, #a95379, #8d3f65); }
+.category-teal { background-image: linear-gradient(to bottom, #247e87, #1b6972); }
+.category-red { background-image: linear-gradient(to bottom, #bd6069, #a74c57); }
+.category-forest { background-image: linear-gradient(to bottom, #4b8c62, #36764e); }
+.category-indigo { background-image: linear-gradient(to bottom, #5a6d9f, #455884); }
+
+.category-icon {
+  color: alpha(white, 0.28);
+  transform: translateY(28px);
+}
+
+.category-title {
+  color: white;
+  font-weight: 700;
 }

@@ -6,6 +6,7 @@ pub fn window_content() -> gtk::Box {
     install_styles();
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
+    header.add_css_class("shell-header");
 
     let search_button = gtk::ToggleButton::builder()
         .icon_name("system-search-symbolic")
@@ -13,8 +14,10 @@ pub fn window_content() -> gtk::Box {
         .build();
     header.pack_start(&search_button);
 
-    let stack = gtk::Stack::builder().hexpand(true).build();
-    let switcher = gtk::StackSwitcher::builder().stack(&stack).build();
+    let stack = adw::ViewStack::builder().hexpand(true).vexpand(true).build();
+    let switcher = adw::ViewSwitcher::new();
+    switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
+    switcher.set_stack(Some(&stack));
     header.set_title_widget(Some(&switcher));
 
     let menu = gtk::MenuButton::builder()
@@ -41,27 +44,30 @@ pub fn window_content() -> gtk::Box {
         .transition_type(gtk::RevealerTransitionType::SlideDown)
         .reveal_child(false)
         .build();
-    let search_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    search_box.set_hexpand(true);
-    search_box.set_margin_top(12);
-    search_box.set_margin_bottom(12);
-    search_box.set_margin_start(24);
-    search_box.set_margin_end(24);
+    let search_clamp = adw::Clamp::builder().maximum_size(500).build();
+    search_clamp.set_margin_top(8);
+    search_clamp.set_margin_bottom(12);
+    search_clamp.set_margin_start(24);
+    search_clamp.set_margin_end(24);
     let entry = gtk::SearchEntry::builder()
         .placeholder_text("Search podcasts")
         .hexpand(true)
         .build();
-    search_box.append(&entry);
-    search_revealer.set_child(Some(&search_box));
+    search_clamp.set_child(Some(&entry));
+    search_revealer.set_child(Some(&search_clamp));
     root.append(&search_revealer);
     let revealer = search_revealer.clone();
+    let search_entry = entry.clone();
     search_button.connect_toggled(move |button| {
         revealer.set_reveal_child(button.is_active());
+        if button.is_active() {
+            search_entry.grab_focus();
+        }
     });
 
-    stack.add_titled(&discovery::page(), Some("discover"), "Discover");
-    stack.add_titled(&empty_state("Your followed podcasts will appear here.", "starred-symbolic"), Some("following"), "Following");
-    stack.add_titled(&empty_state("New episodes from your shows will appear here.", "media-playlist-repeat-symbolic"), Some("new-episodes"), "New Episodes");
+    stack.add_titled_with_icon(&discovery::page(), Some("discover"), "Discover", "find-location-symbolic");
+    stack.add_titled_with_icon(&empty_state("Your followed podcasts will appear here.", "starred-symbolic"), Some("following"), "Following", "folder-music-symbolic");
+    stack.add_titled_with_icon(&empty_state("New episodes from your shows will appear here.", "media-playlist-repeat-symbolic"), Some("new-episodes"), "New Episodes", "view-refresh-symbolic");
     root.append(&stack);
     root
 }
