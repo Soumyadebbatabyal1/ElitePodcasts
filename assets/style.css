@@ -60,3 +60,9 @@
   color: white;
   font-weight: 700;
 }
+
+.discovery-result {
+  padding: 16px;
+  border-radius: 12px;
+  background-color: alpha(currentColor, 0.055);
+}

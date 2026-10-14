@@ -62,10 +62,14 @@ pub fn window_content() -> gtk::Box {
         revealer.set_reveal_child(button.is_active());
         if button.is_active() {
             search_entry.grab_focus();
+        } else {
+            search_entry.set_text("");
         }
     });
 
-    stack.add_titled_with_icon(&discovery::page(), Some("discover"), "Discover", "find-location-symbolic");
+    stack.add_titled_with_icon(&discovery::page(&entry), Some("discover"), "Discover", "find-location-symbolic");
+    let navigation = stack.clone();
+    entry.connect_activate(move |_| navigation.set_visible_child_name("discover"));
     stack.add_titled_with_icon(&empty_state("Your followed podcasts will appear here.", "starred-symbolic"), Some("following"), "Following", "folder-music-symbolic");
     stack.add_titled_with_icon(&empty_state("New episodes from your shows will appear here.", "media-playlist-repeat-symbolic"), Some("new-episodes"), "New Episodes", "view-refresh-symbolic");
     root.append(&stack);
