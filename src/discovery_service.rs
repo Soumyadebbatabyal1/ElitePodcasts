@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
+use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BASE_URL: &str = "https://api.podcastindex.org";
@@ -11,6 +12,17 @@ pub struct Show {
     pub author: String,
     pub description: String,
     pub feed_url: String,
+}
+
+pub struct Episode {
+    pub title: String,
+    pub date: String,
+}
+
+pub struct FeedDetails {
+    pub title: String,
+    pub description: String,
+    pub episodes: Vec<Episode>,
 }
 
 #[derive(Deserialize)]
@@ -130,4 +142,46 @@ pub fn category(name: &str) -> Result<Vec<Show>, String> {
             })
         })
         .collect())
+}
+
+pub fn feed(url: &str) -> Result<FeedDetails, String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("This show does not have a usable RSS URL.".into());
+    }
+    let response = agent().get(url).call().map_err(request_error)?;
+    let mut xml = String::new();
+    response
+        .into_reader()
+        .take(8 * 1024 * 1024)
+        .read_to_string(&mut xml)
+        .map_err(|error| format!("Could not read the RSS feed: {error}"))?;
+    let document = roxmltree::Document::parse(&xml)
+        .map_err(|error| format!("Could not parse the RSS feed: {error}"))?;
+    let channel = document
+        .descendants()
+        .find(|node| node.has_tag_name("channel"))
+        .ok_or_else(|| "This feed does not contain an RSS channel.".to_string())?;
+    let field = |node: roxmltree::Node<'_, '_>, name: &str| -> String {
+        node.children()
+            .find(|child| child.is_element() && child.tag_name().name() == name)
+            .and_then(|child| child.text())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let episodes = channel
+        .children()
+        .filter(|node| node.has_tag_name("item"))
+        .take(20)
+        .map(|node| Episode {
+            title: field(node, "title"),
+            date: field(node, "pubDate"),
+        })
+        .filter(|episode| !episode.title.is_empty())
+        .collect();
+    Ok(FeedDetails {
+        title: field(channel, "title"),
+        description: field(channel, "description"),
+        episodes,
+    })
 }

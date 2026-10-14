@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::data::{CATEGORIES, FEATURED};
-use crate::discovery_service::{self, Show};
+use crate::discovery_service::{self, FeedDetails, Show};
 
 const HERO_COLORS: [&str; 3] = ["hero-plum", "hero-green", "hero-blue"];
 
@@ -46,7 +46,92 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
         .build();
     view.add_named(&results_scroller, Some("results"));
 
+    let feed_content = gtk::Box::new(gtk::Orientation::Vertical, 18);
+    feed_content.set_margin_top(24);
+    feed_content.set_margin_bottom(40);
+    let feed_header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let feed_back = gtk::Button::from_icon_name("go-previous-symbolic");
+    feed_back.add_css_class("flat");
+    feed_back.set_tooltip_text(Some("Back to results"));
+    feed_header.append(&feed_back);
+    let feed_title = gtk::Label::new(None);
+    feed_title.add_css_class("title-1");
+    feed_title.set_halign(gtk::Align::Start);
+    feed_title.set_wrap(true);
+    feed_header.append(&feed_title);
+    feed_content.append(&feed_header);
+    let feed_description = gtk::Label::new(None);
+    feed_description.set_halign(gtk::Align::Start);
+    feed_description.set_wrap(true);
+    feed_description.add_css_class("dim-label");
+    feed_content.append(&feed_description);
+    let episodes = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    feed_content.append(&episodes);
+    let feed_clamp = adw::Clamp::builder().maximum_size(930).build();
+    feed_clamp.set_margin_start(24);
+    feed_clamp.set_margin_end(24);
+    feed_clamp.set_child(Some(&feed_content));
+    let feed_scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&feed_clamp)
+        .build();
+    view.add_named(&feed_scroller, Some("feed"));
+
     let generation = Rc::new(Cell::new(0u64));
+    let view_for_feed_back = view.clone();
+    let generation_for_feed_back = generation.clone();
+    feed_back.connect_clicked(move |_| {
+        generation_for_feed_back.set(generation_for_feed_back.get().wrapping_add(1));
+        view_for_feed_back.set_visible_child_name("results");
+    });
+    let open_feed: Rc<dyn Fn(Show)> = {
+        let view = view.clone();
+        let generation = generation.clone();
+        Rc::new(move |show| {
+            feed_title.set_text(&show.title);
+            feed_description.set_text("");
+            clear(&episodes);
+            let spinner = gtk::Spinner::new();
+            spinner.start();
+            spinner.set_halign(gtk::Align::Center);
+            spinner.set_margin_top(32);
+            episodes.append(&spinner);
+            view.set_visible_child_name("feed");
+
+            let id = generation.get().wrapping_add(1);
+            generation.set(id);
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(discovery_service::feed(&show.feed_url));
+            });
+            let generation = generation.clone();
+            let episodes = episodes.clone();
+            let feed_title = feed_title.clone();
+            let feed_description = feed_description.clone();
+            gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
+                if generation.get() != id {
+                    return gtk::glib::ControlFlow::Break;
+                }
+                match rx.try_recv() {
+                    Ok(answer) => {
+                        clear(&episodes);
+                        match answer {
+                            Ok(feed) => show_feed(&feed_title, &feed_description, &episodes, feed),
+                            Err(message) => show_message(&episodes, "Could not load RSS feed", &message),
+                        }
+                        gtk::glib::ControlFlow::Break
+                    }
+                    Err(mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        clear(&episodes);
+                        show_message(&episodes, "Could not load RSS feed", "The request ended unexpectedly.");
+                        gtk::glib::ControlFlow::Break
+                    }
+                }
+            });
+        })
+    };
     let view_for_back = view.clone();
     let generation_for_back = generation.clone();
     let entry_for_back = entry.clone();
@@ -60,6 +145,7 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
         let heading = heading.clone();
         let listing = listing.clone();
         let generation = generation.clone();
+        let open_feed = open_feed.clone();
         Rc::new(move |request| {
             heading.set_text(&match &request {
                 Request::Search(term) => format!("Search results for “{term}”"),
@@ -85,6 +171,7 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
             });
             let listing = listing.clone();
             let generation = generation.clone();
+            let open_feed = open_feed.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
                 if generation.get() != id {
                     return gtk::glib::ControlFlow::Break;
@@ -93,7 +180,7 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
                     Ok(answer) => {
                         clear(&listing);
                         match answer {
-                            Ok(shows) => show_results(&listing, shows),
+                            Ok(shows) => show_results(&listing, shows, open_feed.clone()),
                             Err(message) => show_message(&listing, "Could not load podcasts", &message),
                         }
                         gtk::glib::ControlFlow::Break
@@ -159,18 +246,19 @@ fn show_message(container: &gtk::Box, title: &str, message: &str) {
         .build());
 }
 
-fn show_results(container: &gtk::Box, shows: Vec<Show>) {
+fn show_results(container: &gtk::Box, shows: Vec<Show>, open_feed: Rc<dyn Fn(Show)>) {
     if shows.is_empty() {
         show_message(container, "No podcasts found", "No matching podcasts were found.");
         return;
     }
     for show in shows {
-        let card = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+        let card = gtk::Button::new();
         card.add_css_class("discovery-result");
+        let layout = gtk::Box::new(gtk::Orientation::Horizontal, 16);
         let icon = gtk::Image::from_icon_name("audio-x-generic-symbolic");
         icon.set_pixel_size(48);
         icon.add_css_class("dim-label");
-        card.append(&icon);
+        layout.append(&icon);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
         text.set_hexpand(true);
         let title = gtk::Label::new(Some(&show.title));
@@ -192,9 +280,45 @@ fn show_results(container: &gtk::Box, shows: Vec<Show>) {
             description.set_ellipsize(gtk::pango::EllipsizeMode::End);
             text.append(&description);
         }
-        card.append(&text);
+        layout.append(&text);
+        card.set_child(Some(&layout));
         card.set_tooltip_text(Some(&show.feed_url));
+        let open_feed = open_feed.clone();
+        card.connect_clicked(move |_| open_feed(show.clone()));
         container.append(&card);
+    }
+}
+
+fn show_feed(title: &gtk::Label, description: &gtk::Label, episodes: &gtk::Box, feed: FeedDetails) {
+    if !feed.title.is_empty() {
+        title.set_text(&feed.title);
+    }
+    if !feed.description.contains('<') {
+        description.set_text(&feed.description);
+    }
+    if feed.episodes.is_empty() {
+        show_message(episodes, "No episodes found", "This RSS feed has no recent episodes to show.");
+        return;
+    }
+    let heading = gtk::Label::new(Some("Recent Episodes"));
+    heading.add_css_class("title-2");
+    heading.set_halign(gtk::Align::Start);
+    episodes.append(&heading);
+    for episode in feed.episodes {
+        let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        row.add_css_class("discovery-result");
+        let label = gtk::Label::new(Some(&episode.title));
+        label.set_halign(gtk::Align::Start);
+        label.set_wrap(true);
+        label.add_css_class("heading");
+        row.append(&label);
+        if !episode.date.is_empty() {
+            let date = gtk::Label::new(Some(&episode.date));
+            date.set_halign(gtk::Align::Start);
+            date.add_css_class("dim-label");
+            row.append(&date);
+        }
+        episodes.append(&row);
     }
 }
 
