@@ -4,33 +4,21 @@
   box-shadow: none;
 }
 
-.featured-frame {
-  border-radius: 14px;
+.sidebar-pane {
+  background-color: alpha(currentColor, 0.04);
 }
 
-.featured-panel {
-  color: white;
+.sidebar-row {
+  border-radius: 8px;
 }
 
-.hero-plum { background: #542137; }
-.hero-green { background: #247e69; }
-.hero-blue { background: #354975; }
-
-.featured-artwork {
-  border-radius: 12px;
-  box-shadow: 0 3px 10px alpha(black, 0.24);
+.sidebar-row:selected {
+  background-color: alpha(@accent_bg_color, 0.16);
 }
 
-.hero-description {
-  color: alpha(white, 0.86);
-}
-
-.hero-arrow {
-  color: white;
-}
-
-.pagination-dots {
-  opacity: 0.55;
+.sidebar-row:selected label,
+.sidebar-row:selected image {
+  color: @accent_bg_color;
 }
 
 .category-tile {
@@ -53,7 +41,7 @@
 
 .category-icon {
   color: alpha(white, 0.28);
-  transform: translateY(28px);
+  transform: translateY(22px);
 }
 
 .category-title {

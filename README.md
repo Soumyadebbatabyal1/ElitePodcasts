@@ -1,6 +1,6 @@
 # Elite Podcasts
 
-Elite Podcasts is a native GTK4 and libadwaita podcast application for GNOME. The foundation and UI shell are complete. Search reads live Podcast Index results, and selecting a result shows recent episodes from its public RSS feed. The featured carousel still uses clearly fictional local placeholders. Playback and following are planned for later phases.
+Elite Podcasts is a native GTK4 and libadwaita podcast application for GNOME. Search reads live Podcast Index results, and selecting a result shows recent episodes from its public RSS feed. The window uses a Settings-style sidebar, a current-page title, and a loading spinner beside that title. Playback and following are planned for later phases.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ On Fedora, the relevant packages are `rust`, `cargo`, `gtk4-devel`, `libadwaita-
 cargo run
 ```
 
-Run it from the project directory so the relative paths to the placeholder SVG artwork resolve. Cargo downloads the Rust crates on the first build.
+Cargo downloads the Rust crates on the first build. Close any older Elite Podcasts window before launching a newly built version; the application ID allows only one running instance.
 
 Select the search button, type a podcast name, and press Enter. Search uses Podcast Index's public keyless endpoint. Category tiles load trending feeds with API credentials, except Climate, which uses a public text search. Network requests run in a worker thread so the window remains responsive.
 
@@ -36,11 +36,11 @@ Keep credentials out of the repository. If either value is missing, the category
 ## Project layout
 
 - `src/app.rs` starts the libadwaita application and creates its window.
-- `src/ui/` contains the header, navigation, responsive discovery page, featured carousel, and a nine-category grid.
-- `src/data.rs` defines sample podcasts and categories.
+- `src/ui/` contains the adaptive sidebar, page header, discovery views, and nine-category grid.
+- `src/data.rs` defines the category tiles.
 - `src/discovery_service.rs` handles Podcast Index requests and reads public RSS feeds.
-- `assets/artwork/` contains original local SVG placeholder art.
-- `assets/style.css` adds restrained styling on top of the active Adwaita light or dark theme.
+- `assets/artwork/` retains original local SVG placeholder art for a possible future feature; the carousel is currently hidden.
+- `assets/style.css` adds restrained styling; the accent CSS files use Apple blue in light and dark mode.
 
 ## Technology choices
 

@@ -1,13 +1,11 @@
 use adw::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::data::{CATEGORIES, FEATURED};
+use crate::data::CATEGORIES;
 use crate::discovery_service::{self, FeedDetails, Show};
-
-const HERO_COLORS: [&str; 3] = ["hero-plum", "hero-green", "hero-blue"];
 
 #[derive(Clone)]
 enum Request {
@@ -15,24 +13,23 @@ enum Request {
     Category(String),
 }
 
-pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
+pub(super) struct DiscoveryPage {
+    pub widget: gtk::Widget,
+    pub reset: Rc<dyn Fn()>,
+}
+
+pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> DiscoveryPage {
     let view = gtk::Stack::new();
     view.set_vexpand(true);
 
     let results = gtk::Box::new(gtk::Orientation::Vertical, 18);
     results.set_margin_top(24);
     results.set_margin_bottom(40);
-    let results_header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let back = gtk::Button::from_icon_name("go-previous-symbolic");
     back.add_css_class("flat");
     back.set_tooltip_text(Some("Back to Discover"));
-    results_header.append(&back);
-    let heading = gtk::Label::new(None);
-    heading.add_css_class("title-1");
-    heading.set_halign(gtk::Align::Start);
-    heading.set_wrap(true);
-    results_header.append(&heading);
-    results.append(&results_header);
+    back.set_halign(gtk::Align::Start);
+    results.append(&back);
     let listing = gtk::Box::new(gtk::Orientation::Vertical, 8);
     results.append(&listing);
     let results_clamp = adw::Clamp::builder().maximum_size(930).build();
@@ -49,17 +46,11 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
     let feed_content = gtk::Box::new(gtk::Orientation::Vertical, 18);
     feed_content.set_margin_top(24);
     feed_content.set_margin_bottom(40);
-    let feed_header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let feed_back = gtk::Button::from_icon_name("go-previous-symbolic");
     feed_back.add_css_class("flat");
     feed_back.set_tooltip_text(Some("Back to results"));
-    feed_header.append(&feed_back);
-    let feed_title = gtk::Label::new(None);
-    feed_title.add_css_class("title-1");
-    feed_title.set_halign(gtk::Align::Start);
-    feed_title.set_wrap(true);
-    feed_header.append(&feed_title);
-    feed_content.append(&feed_header);
+    feed_back.set_halign(gtk::Align::Start);
+    feed_content.append(&feed_back);
     let feed_description = gtk::Label::new(None);
     feed_description.set_halign(gtk::Align::Start);
     feed_description.set_wrap(true);
@@ -79,17 +70,22 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
     view.add_named(&feed_scroller, Some("feed"));
 
     let generation = Rc::new(Cell::new(0u64));
+    let result_title = Rc::new(RefCell::new(String::from("Search Results")));
     let view_for_feed_back = view.clone();
     let generation_for_feed_back = generation.clone();
+    let status_for_feed_back = status.clone();
+    let result_title_for_back = result_title.clone();
     feed_back.connect_clicked(move |_| {
         generation_for_feed_back.set(generation_for_feed_back.get().wrapping_add(1));
         view_for_feed_back.set_visible_child_name("results");
+        status_for_feed_back(&result_title_for_back.borrow(), false);
     });
     let open_feed: Rc<dyn Fn(Show)> = {
         let view = view.clone();
         let generation = generation.clone();
+        let status = status.clone();
         Rc::new(move |show| {
-            feed_title.set_text(&show.title);
+            status(&show.title, true);
             feed_description.set_text("");
             clear(&episodes);
             let spinner = gtk::Spinner::new();
@@ -102,13 +98,14 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
             let id = generation.get().wrapping_add(1);
             generation.set(id);
             let (tx, rx) = mpsc::channel();
+            let fallback_title = show.title.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(discovery_service::feed(&show.feed_url));
             });
             let generation = generation.clone();
             let episodes = episodes.clone();
-            let feed_title = feed_title.clone();
             let feed_description = feed_description.clone();
+            let status = status.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
                 if generation.get() != id {
                     return gtk::glib::ControlFlow::Break;
@@ -117,14 +114,21 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
                     Ok(answer) => {
                         clear(&episodes);
                         match answer {
-                            Ok(feed) => show_feed(&feed_title, &feed_description, &episodes, feed),
-                            Err(message) => show_message(&episodes, "Could not load RSS feed", &message),
+                            Ok(feed) => {
+                                status(if feed.title.is_empty() { &fallback_title } else { &feed.title }, false);
+                                show_feed(&feed_description, &episodes, feed);
+                            }
+                            Err(message) => {
+                                status(&fallback_title, false);
+                                show_message(&episodes, "Could not load RSS feed", &message);
+                            }
                         }
                         gtk::glib::ControlFlow::Break
                     }
                     Err(mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         clear(&episodes);
+                        status(&fallback_title, false);
                         show_message(&episodes, "Could not load RSS feed", "The request ended unexpectedly.");
                         gtk::glib::ControlFlow::Break
                     }
@@ -135,22 +139,27 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
     let view_for_back = view.clone();
     let generation_for_back = generation.clone();
     let entry_for_back = entry.clone();
+    let status_for_back = status.clone();
     back.connect_clicked(move |_| {
         generation_for_back.set(generation_for_back.get().wrapping_add(1));
         entry_for_back.set_text("");
         view_for_back.set_visible_child_name("home");
+        status_for_back("Discover", false);
     });
     let request: Rc<dyn Fn(Request)> = {
         let view = view.clone();
-        let heading = heading.clone();
         let listing = listing.clone();
         let generation = generation.clone();
         let open_feed = open_feed.clone();
+        let status = status.clone();
+        let result_title = result_title.clone();
         Rc::new(move |request| {
-            heading.set_text(&match &request {
-                Request::Search(term) => format!("Search results for “{term}”"),
-                Request::Category(name) => format!("{name} podcasts"),
-            });
+            let title = match &request {
+                Request::Search(_) => "Search Results".to_string(),
+                Request::Category(name) => name.clone(),
+            };
+            *result_title.borrow_mut() = title.clone();
+            status(&title, true);
             clear(&listing);
             let spinner = gtk::Spinner::new();
             spinner.start();
@@ -172,6 +181,7 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
             let listing = listing.clone();
             let generation = generation.clone();
             let open_feed = open_feed.clone();
+            let status = status.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
                 if generation.get() != id {
                     return gtk::glib::ControlFlow::Break;
@@ -179,6 +189,7 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
                 match rx.try_recv() {
                     Ok(answer) => {
                         clear(&listing);
+                        status(&title, false);
                         match answer {
                             Ok(shows) => show_results(&listing, shows, open_feed.clone()),
                             Err(message) => show_message(&listing, "Could not load podcasts", &message),
@@ -188,6 +199,7 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
                     Err(mpsc::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         clear(&listing);
+                        status(&title, false);
                         show_message(&listing, "Could not load podcasts", "The request ended unexpectedly.");
                         gtk::glib::ControlFlow::Break
                     }
@@ -203,7 +215,6 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 30);
     content.set_margin_top(24);
     content.set_margin_bottom(40);
-    content.append(&featured());
     content.append(&categories(request.clone()));
 
     let clamp = adw::Clamp::builder().maximum_size(930).build();
@@ -223,13 +234,25 @@ pub(super) fn page(entry: &gtk::SearchEntry) -> gtk::Widget {
     });
     let view_for_clear = view.clone();
     let generation_for_clear = generation.clone();
+    let status_for_clear = status.clone();
     entry.connect_search_changed(move |entry| {
         if entry.text().trim().is_empty() {
             generation_for_clear.set(generation_for_clear.get().wrapping_add(1));
             view_for_clear.set_visible_child_name("home");
+            status_for_clear("Discover", false);
         }
     });
-    view.upcast()
+    let reset_view = view.clone();
+    let reset_generation = generation.clone();
+    let reset_entry = entry.clone();
+    let reset_status = status.clone();
+    let reset: Rc<dyn Fn()> = Rc::new(move || {
+        reset_generation.set(reset_generation.get().wrapping_add(1));
+        reset_entry.set_text("");
+        reset_view.set_visible_child_name("home");
+        reset_status("Discover", false);
+    });
+    DiscoveryPage { widget: view.upcast(), reset }
 }
 
 fn clear(container: &gtk::Box) {
@@ -289,10 +312,7 @@ fn show_results(container: &gtk::Box, shows: Vec<Show>, open_feed: Rc<dyn Fn(Sho
     }
 }
 
-fn show_feed(title: &gtk::Label, description: &gtk::Label, episodes: &gtk::Box, feed: FeedDetails) {
-    if !feed.title.is_empty() {
-        title.set_text(&feed.title);
-    }
+fn show_feed(description: &gtk::Label, episodes: &gtk::Box, feed: FeedDetails) {
     if !feed.description.contains('<') {
         description.set_text(&feed.description);
     }
@@ -322,106 +342,6 @@ fn show_feed(title: &gtk::Label, description: &gtk::Label, episodes: &gtk::Box, 
     }
 }
 
-fn featured() -> gtk::Widget {
-    let index = std::rc::Rc::new(std::cell::Cell::new(0usize));
-    let carousel = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    let frame = gtk::Overlay::new();
-    frame.set_overflow(gtk::Overflow::Hidden);
-    frame.add_css_class("featured-frame");
-
-    let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    panel.set_height_request(320);
-    panel.add_css_class("featured-panel");
-    panel.add_css_class(HERO_COLORS[0]);
-
-    let details = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    details.set_halign(gtk::Align::Center);
-    details.set_valign(gtk::Align::Center);
-    details.set_margin_start(54);
-    details.set_margin_end(54);
-    details.set_margin_top(32);
-    details.set_margin_bottom(32);
-
-    let image = gtk::Picture::for_filename(FEATURED[0].artwork);
-    image.set_content_fit(gtk::ContentFit::Cover);
-    image.set_size_request(132, 132);
-    image.set_can_shrink(true);
-    image.set_halign(gtk::Align::Center);
-    image.set_overflow(gtk::Overflow::Hidden);
-    image.add_css_class("featured-artwork");
-
-    let title = gtk::Label::new(Some(FEATURED[0].title));
-    title.set_halign(gtk::Align::Center);
-    title.set_justify(gtk::Justification::Center);
-    title.set_wrap(true);
-    title.add_css_class("title-1");
-
-    let description = gtk::Label::new(Some(FEATURED[0].description));
-    description.set_halign(gtk::Align::Center);
-    description.set_justify(gtk::Justification::Center);
-    description.set_wrap(true);
-    description.set_max_width_chars(58);
-    description.add_css_class("hero-description");
-
-    details.append(&image);
-    details.append(&title);
-    details.append(&description);
-    panel.append(&details);
-    frame.set_child(Some(&panel));
-
-    let previous = gtk::Button::from_icon_name("go-previous-symbolic");
-    previous.add_css_class("flat");
-    previous.add_css_class("hero-arrow");
-    previous.set_tooltip_text(Some("Previous featured podcast"));
-    previous.set_halign(gtk::Align::Start);
-    previous.set_valign(gtk::Align::Center);
-    previous.set_margin_start(18);
-    frame.add_overlay(&previous);
-
-    let next = gtk::Button::from_icon_name("go-next-symbolic");
-    next.add_css_class("flat");
-    next.add_css_class("hero-arrow");
-    next.set_tooltip_text(Some("Next featured podcast"));
-    next.set_halign(gtk::Align::End);
-    next.set_valign(gtk::Align::Center);
-    next.set_margin_end(18);
-    frame.add_overlay(&next);
-
-    let dots = gtk::Label::new(Some("●  ○  ○"));
-    dots.add_css_class("pagination-dots");
-    dots.set_halign(gtk::Align::Center);
-
-    for (button, direction) in [(previous, -1isize), (next, 1isize)] {
-        let pos = index.clone();
-        let hero = panel.clone();
-        let artwork = image.clone();
-        let heading = title.clone();
-        let summary = description.clone();
-        let pagination = dots.clone();
-        button.connect_clicked(move |_| {
-            let current = pos.get();
-            let updated = (current as isize + direction + FEATURED.len() as isize) as usize
-                % FEATURED.len();
-            pos.set(updated);
-            hero.remove_css_class(HERO_COLORS[current]);
-            hero.add_css_class(HERO_COLORS[updated]);
-            artwork.set_filename(Some(FEATURED[updated].artwork));
-            heading.set_text(FEATURED[updated].title);
-            summary.set_text(FEATURED[updated].description);
-            pagination.set_text(
-                &(0..FEATURED.len())
-                    .map(|i| if i == updated { "●" } else { "○" })
-                    .collect::<Vec<_>>()
-                    .join("  "),
-            );
-        });
-    }
-
-    carousel.append(&frame);
-    carousel.append(&dots);
-    carousel.upcast()
-}
-
 fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
     let flow = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -434,18 +354,18 @@ fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
 
     for (icon, name, color) in CATEGORIES.iter() {
         let tile = gtk::Button::new();
-        tile.set_size_request(270, 108);
+        tile.set_size_request(180, 82);
         tile.set_overflow(gtk::Overflow::Hidden);
         tile.add_css_class("category-tile");
         tile.add_css_class(&format!("category-{color}"));
 
         let layout = gtk::Overlay::new();
         let surface = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        surface.set_size_request(-1, 108);
+        surface.set_size_request(-1, 82);
         layout.set_child(Some(&surface));
 
         let image = gtk::Image::from_icon_name(icon);
-        image.set_pixel_size(110);
+        image.set_pixel_size(92);
         image.set_halign(gtk::Align::End);
         image.set_valign(gtk::Align::End);
         image.set_margin_end(8);
@@ -456,7 +376,7 @@ fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
         label.set_halign(gtk::Align::Start);
         label.set_valign(gtk::Align::End);
         label.set_margin_start(16);
-        label.set_margin_bottom(14);
+        label.set_margin_bottom(11);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         label.add_css_class("category-title");
         layout.add_overlay(&label);
