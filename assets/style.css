@@ -1,0 +1,20 @@
+.featured-panel {
+  background: @card_bg_color;
+}
+.featured-panel picture {
+  border-radius: 16px 16px 0 0;
+}
+.category-tile {
+  border-radius: 14px;
+}
+.category-purple { background: alpha(#9141ac, 0.12); }
+.category-blue { background: alpha(#3584e4, 0.12); }
+.category-orange { background: alpha(#e66100, 0.12); }
+.category-green { background: alpha(#3a944a, 0.12); }
+.category-pink { background: alpha(#c061cb, 0.12); }
+.category-teal { background: alpha(#2190a4, 0.12); }
+.category-red { background: alpha(#c01c28, 0.12); }
+.category-yellow { background: alpha(#c88800, 0.12); }
+.podcast-card picture {
+  border-radius: 12px;
+}
