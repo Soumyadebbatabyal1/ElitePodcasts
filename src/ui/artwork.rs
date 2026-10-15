@@ -15,7 +15,7 @@ const BATCH_WAIT: Duration = Duration::from_secs(15);
 pub struct ArtworkLoader {
     jobs: mpsc::Sender<String>,
     pending: RefCell<HashSet<String>>,
-    cache: RefCell<HashMap<String, gtk::gdk::Texture>>,
+    cache: RefCell<HashMap<String, gtk::gdk_pixbuf::Pixbuf>>,
     failed: RefCell<HashSet<String>>,
 }
 
@@ -51,14 +51,14 @@ impl ArtworkLoader {
             };
             while let Ok((url, bytes)) = done_rx.try_recv() {
                 loader.pending.borrow_mut().remove(&url);
-                if let Some(texture) = bytes.and_then(|bytes| decode(&bytes)) {
+                if let Some(pixbuf) = bytes.and_then(|bytes| decode(&bytes)) {
                     let mut cache = loader.cache.borrow_mut();
                     if cache.len() >= MAX_CACHED_IMAGES {
                         if let Some(old_url) = cache.keys().next().cloned() {
                             cache.remove(&old_url);
                         }
                     }
-                    cache.insert(url, texture);
+                    cache.insert(url, pixbuf);
                 } else {
                     loader.failed.borrow_mut().insert(url);
                 }
@@ -69,9 +69,15 @@ impl ArtworkLoader {
     }
 
     pub fn cached_widget(&self, candidates: &[String], size: i32) -> gtk::Widget {
+        let cache = self.cache.borrow();
         let selected = candidates
             .iter()
-            .find(|url| self.cache.borrow().contains_key(url.as_str()));
+            .filter_map(|url| {
+                cache.get(url)
+                    .map(|pixbuf| (url, pixbuf.width() * pixbuf.height()))
+            })
+            .max_by_key(|(_, pixels)| *pixels)
+            .map(|(url, _)| url);
         self.make_widget(selected.map(String::as_str), size)
     }
 
@@ -124,8 +130,11 @@ impl ArtworkLoader {
         picture.set_size_request(size, size);
         overlay.add_overlay(&picture);
         if let Some(url) = url {
-            if let Some(texture) = self.cache.borrow().get(url) {
-                picture.set_paintable(Some(texture));
+            if let Some(pixbuf) = self.cache.borrow().get(url).cloned() {
+                set_picture_pixbuf(&picture, &pixbuf, size);
+                picture.connect_scale_factor_notify(move |picture| {
+                    set_picture_pixbuf(picture, &pixbuf, size);
+                });
             }
         }
         overlay.upcast()
@@ -189,12 +198,30 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     }
 }
 
-fn decode(bytes: &[u8]) -> Option<gtk::gdk::Texture> {
+fn set_picture_pixbuf(picture: &gtk::Picture, original: &gtk::gdk_pixbuf::Pixbuf, size: i32) {
+    let target = size.saturating_mul(picture.scale_factor().max(1));
+    let largest = original.width().max(original.height());
+    let pixbuf = if largest > target {
+        let scale = f64::from(target) / f64::from(largest);
+        original
+            .scale_simple(
+                (f64::from(original.width()) * scale).round().max(1.0) as i32,
+                (f64::from(original.height()) * scale).round().max(1.0) as i32,
+                gtk::gdk_pixbuf::InterpType::Hyper,
+            )
+            .unwrap_or_else(|| original.clone())
+    } else {
+        original.clone()
+    };
+    picture.set_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
+}
+
+fn decode(bytes: &[u8]) -> Option<gtk::gdk_pixbuf::Pixbuf> {
     let loader = gtk::gdk_pixbuf::PixbufLoader::new();
     loader.connect_size_prepared(|loader, width, height| {
         let largest = width.max(height);
-        if largest > 512 {
-            let scale = 512.0 / f64::from(largest);
+        if largest > 1024 {
+            let scale = 1024.0 / f64::from(largest);
             loader.set_size(
                 (f64::from(width) * scale).round().max(1.0) as i32,
                 (f64::from(height) * scale).round().max(1.0) as i32,
@@ -203,5 +230,5 @@ fn decode(bytes: &[u8]) -> Option<gtk::gdk::Texture> {
     });
     loader.write(bytes).ok()?;
     loader.close().ok()?;
-    loader.pixbuf().map(|pixbuf| gtk::gdk::Texture::for_pixbuf(&pixbuf))
+    loader.pixbuf()
 }

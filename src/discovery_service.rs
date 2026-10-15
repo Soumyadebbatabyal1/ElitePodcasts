@@ -18,15 +18,20 @@ pub struct Show {
     pub updated: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Episode {
+    pub id: String,
     pub title: String,
     pub date: String,
 }
 
+#[derive(Clone)]
 pub struct FeedDetails {
     pub title: String,
     pub description: String,
+    pub website: Option<String>,
     pub artwork_url: Option<String>,
+    pub all_episode_ids: Vec<String>,
     pub episodes: Vec<Episode>,
 }
 
@@ -319,16 +324,27 @@ pub fn feed(url: &str) -> Result<FeedDetails, String> {
             .trim()
             .to_string()
     };
-    let episodes = channel
+    let all_episodes: Vec<Episode> = channel
         .children()
         .filter(|node| node.has_tag_name("item"))
-        .take(20)
-        .map(|node| Episode {
-            title: field(node, "title"),
-            date: field(node, "pubDate"),
+        .map(|node| {
+            let title = field(node, "title");
+            let date = field(node, "pubDate");
+            let guid = field(node, "guid");
+            Episode {
+                id: if guid.is_empty() {
+                    format!("{title}\u{1f}{date}")
+                } else {
+                    guid
+                },
+                title,
+                date,
+            }
         })
         .filter(|episode| !episode.title.is_empty())
         .collect();
+    let all_episode_ids = all_episodes.iter().map(|episode| episode.id.clone()).collect();
+    let episodes = all_episodes.into_iter().take(20).collect();
     let artwork_url = channel
         .children()
         .find_map(|node| {
@@ -348,7 +364,9 @@ pub fn feed(url: &str) -> Result<FeedDetails, String> {
     Ok(FeedDetails {
         title: field(channel, "title"),
         description: field(channel, "description"),
+        website: Some(field(channel, "link")).filter(|link| usable_feed_url(link)),
         artwork_url,
+        all_episode_ids,
         episodes,
     })
 }

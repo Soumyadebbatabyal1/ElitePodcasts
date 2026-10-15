@@ -4,9 +4,10 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use super::artwork::ArtworkLoader;
 use crate::data::CATEGORIES;
 use crate::discovery_service::{self, FeedDetails, Show};
-use super::artwork::ArtworkLoader;
+use crate::following::FollowingStore;
 
 #[derive(Clone)]
 enum Request {
@@ -17,22 +18,34 @@ enum Request {
 pub(super) struct DiscoveryPage {
     pub widget: gtk::Widget,
     pub reset: Rc<dyn Fn()>,
+    pub open_followed: Rc<dyn Fn(Show)>,
 }
 
-pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn Fn(&str, bool)>) -> DiscoveryPage {
+pub(super) fn page(
+    entry: &gtk::SearchEntry,
+    back: &gtk::Button,
+    menu: &gtk::MenuButton,
+    status: Rc<dyn Fn(&str, bool)>,
+    store: Rc<FollowingStore>,
+    artwork: Rc<ArtworkLoader>,
+    toast: Rc<dyn Fn(&str)>,
+    back_to_following: Rc<dyn Fn()>,
+) -> DiscoveryPage {
     let view = gtk::Stack::new();
     view.set_vexpand(true);
-    let artwork = ArtworkLoader::new();
+    let (website, selected_show, website_action, unsubscribe_action, mark_action) =
+        setup_podcast_menu(menu, store.clone(), toast.clone());
+    let origin_following = Rc::new(Cell::new(false));
 
     let results = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    results.set_margin_top(24);
-    results.set_margin_bottom(40);
+    results.set_margin_top(16);
+    results.set_margin_bottom(24);
     let listing = gtk::Box::new(gtk::Orientation::Vertical, 0);
     listing.set_visible(false);
     results.append(&listing);
-    let results_clamp = adw::Clamp::builder().maximum_size(660).build();
-    results_clamp.set_margin_start(24);
-    results_clamp.set_margin_end(24);
+    let results_clamp = adw::Clamp::builder().maximum_size(620).build();
+    results_clamp.set_margin_start(16);
+    results_clamp.set_margin_end(16);
     results_clamp.set_child(Some(&results));
     let results_scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -41,46 +54,133 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
         .build();
     view.add_named(&results_scroller, Some("results"));
 
-    let feed_content = gtk::Box::new(gtk::Orientation::Vertical, 18);
-    feed_content.set_margin_top(52);
-    feed_content.set_margin_bottom(40);
+    let feed_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    feed_content.set_margin_top(28);
+    feed_content.set_margin_bottom(24);
     feed_content.set_visible(false);
     let feed_artwork = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     feed_artwork.set_halign(gtk::Align::Center);
-    feed_artwork.set_margin_bottom(12);
+    feed_artwork.set_margin_bottom(8);
     feed_content.append(&feed_artwork);
     let feed_description = gtk::Label::new(None);
     feed_description.set_halign(gtk::Align::Center);
     feed_description.set_justify(gtk::Justification::Center);
     feed_description.set_wrap(true);
-    feed_description.set_lines(4);
-    feed_description.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    feed_description.set_max_width_chars(70);
     feed_description.set_visible(false);
     feed_content.append(&feed_description);
-    let read_more = gtk::Button::with_label("Read More");
-    read_more.set_halign(gtk::Align::Center);
-    read_more.set_visible(false);
-    feed_content.append(&read_more);
-    let description_expanded = Rc::new(Cell::new(false));
-    let description_for_button = feed_description.clone();
-    let expanded_for_button = description_expanded.clone();
-    read_more.connect_clicked(move |button| {
-        let expanded = !expanded_for_button.get();
-        expanded_for_button.set(expanded);
-        description_for_button.set_lines(if expanded { -1 } else { 4 });
-        description_for_button.set_ellipsize(if expanded {
-            gtk::pango::EllipsizeMode::None
+    let full_description = Rc::new(RefCell::new(String::new()));
+    let full_for_link = full_description.clone();
+    feed_description.connect_activate_link(move |label, uri| {
+        if uri == "more" {
+            show_description_dialog(label, &full_for_link.borrow());
+            gtk::glib::Propagation::Stop
         } else {
-            gtk::pango::EllipsizeMode::End
-        });
-        button.set_label(if expanded { "Show Less" } else { "Read More" });
+            gtk::glib::Propagation::Proceed
+        }
     });
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    actions.set_halign(gtk::Align::Center);
+    actions.set_margin_top(2);
+    actions.set_margin_bottom(8);
+    actions.set_visible(false);
+    let mark_button = gtk::Button::from_icon_name("audio-headphones-symbolic");
+    mark_button.add_css_class("circular");
+    mark_button.add_css_class("podcast-round-action");
+    mark_button.set_size_request(40, 40);
+    mark_button.set_valign(gtk::Align::Center);
+    mark_button.set_tooltip_text(Some("Mark all episodes as played"));
+    mark_button.set_sensitive(false);
+    actions.append(&mark_button);
+    let latest_button = gtk::Button::new();
+    latest_button.add_css_class("latest-episode-button");
+    latest_button.set_tooltip_text(Some("Playback is not available yet"));
+    latest_button.set_sensitive(false);
+    let latest_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    latest_content.append(&gtk::Image::from_icon_name("media-playback-start-symbolic"));
+    latest_content.append(&gtk::Label::new(Some("Latest episode")));
+    latest_button.set_child(Some(&latest_content));
+    actions.append(&latest_button);
+    let follow_button = gtk::Button::from_icon_name("list-add-symbolic");
+    follow_button.add_css_class("circular");
+    follow_button.add_css_class("podcast-round-action");
+    follow_button.set_size_request(40, 40);
+    follow_button.set_valign(gtk::Align::Center);
+    follow_button.set_tooltip_text(Some("Add to Following"));
+    actions.append(&follow_button);
+    feed_content.append(&actions);
     let episodes = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    episodes.set_margin_top(16);
+    episodes.set_margin_top(8);
     feed_content.append(&episodes);
-    let feed_clamp = adw::Clamp::builder().maximum_size(580).build();
-    feed_clamp.set_margin_start(24);
-    feed_clamp.set_margin_end(24);
+    let current_episodes = Rc::new(RefCell::new(Vec::<String>::new()));
+    let store_for_mark = store.clone();
+    let selected_for_mark = selected_show.clone();
+    let episodes_for_mark = episodes.clone();
+    let episode_ids_for_mark = current_episodes.clone();
+    let toast_for_mark = toast.clone();
+    mark_action.connect_activate(move |_, _| {
+        let Some(show) = selected_for_mark.borrow().clone() else {
+            return;
+        };
+        let ids = episode_ids_for_mark.borrow();
+        match store_for_mark.mark_played(&show.feed_url, &ids) {
+            Ok(added) => {
+                mark_episode_rows(&episodes_for_mark);
+                toast_for_mark(if added == 0 {
+                    "Episodes were already marked as played"
+                } else {
+                    "Episodes marked as played"
+                });
+            }
+            Err(message) => toast_for_mark(&message),
+        }
+    });
+    let action_for_mark_button = mark_action.clone();
+    mark_button.connect_clicked(move |_| action_for_mark_button.activate(None));
+    let selected_for_follow = selected_show.clone();
+    let store_for_follow = store.clone();
+    let toast_for_follow = toast.clone();
+    let menu_unsubscribe_for_follow = unsubscribe_action.clone();
+    follow_button.connect_clicked(move |_| {
+        let Some(show) = selected_for_follow.borrow().clone() else {
+            return;
+        };
+        if store_for_follow.contains(&show.feed_url) {
+            match store_for_follow.remove(&show.feed_url) {
+                Ok(true) => {
+                    menu_unsubscribe_for_follow.set_enabled(false);
+                    toast_for_follow(&format!("Unsubscribed from {}", show.title));
+                }
+                Ok(false) => {}
+                Err(message) => toast_for_follow(&message),
+            }
+        } else {
+            match store_for_follow.add(&show) {
+                Ok(true) => {
+                    menu_unsubscribe_for_follow.set_enabled(true);
+                    toast_for_follow(&format!("Added {} to Following", show.title));
+                }
+                Ok(false) => {}
+                Err(message) => toast_for_follow(&message),
+            }
+        }
+    });
+    let weak_follow = follow_button.downgrade();
+    let weak_store = Rc::downgrade(&store);
+    let selected_for_watch = selected_show.clone();
+    store.watch(move || {
+        if let (Some(button), Some(store)) = (weak_follow.upgrade(), weak_store.upgrade()) {
+            if let Some(show) = selected_for_watch.borrow().as_ref() {
+                update_follow_button(&button, store.contains(&show.feed_url));
+            }
+            true
+        } else {
+            false
+        }
+    });
+    let feed_clamp = adw::Clamp::builder().maximum_size(560).build();
+    feed_clamp.set_margin_start(16);
+    feed_clamp.set_margin_end(16);
     feed_clamp.set_child(Some(&feed_content));
     let feed_scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -96,41 +196,69 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
     let status_for_back = status.clone();
     let result_title_for_back = result_title.clone();
     let back_for_click = back.clone();
+    let menu_for_back = menu.clone();
+    let origin_for_back = origin_following.clone();
     back.connect_clicked(move |_| {
         generation_for_back.set(generation_for_back.get().wrapping_add(1));
         view_for_back.set_transition_type(gtk::StackTransitionType::SlideRight);
         if view_for_back.visible_child_name().as_deref() == Some("feed") {
-            view_for_back.set_visible_child_name("results");
-            status_for_back(&result_title_for_back.borrow(), false);
-            back_for_click.set_tooltip_text(Some("Back to Discover"));
+            menu_for_back.set_visible(false);
+            if origin_for_back.replace(false) {
+                back_for_click.set_visible(false);
+                back_to_following();
+            } else {
+                view_for_back.set_visible_child_name("results");
+                status_for_back(&result_title_for_back.borrow(), false);
+                back_for_click.set_tooltip_text(Some("Back to Discover"));
+            }
         } else {
             view_for_back.set_visible_child_name("home");
             status_for_back("Discover", false);
             back_for_click.set_visible(false);
         }
     });
-    let open_feed: Rc<dyn Fn(Show)> = {
+    let open_feed: Rc<dyn Fn(Show, bool)> = {
         let view = view.clone();
         let generation = generation.clone();
         let status = status.clone();
         let artwork = artwork.clone();
         let back = back.clone();
         let feed_content = feed_content.clone();
-        let read_more = read_more.clone();
-        let description_expanded = description_expanded.clone();
-        Rc::new(move |show| {
+        let full_description = full_description.clone();
+        let actions = actions.clone();
+        let follow_button = follow_button.clone();
+        let mark_button = mark_button.clone();
+        let current_episodes = current_episodes.clone();
+        let mark_action = mark_action.clone();
+        let menu = menu.clone();
+        let website = website.clone();
+        let selected_show = selected_show.clone();
+        let website_action = website_action.clone();
+        let unsubscribe_action = unsubscribe_action.clone();
+        let store = store.clone();
+        Rc::new(move |show, animate: bool| {
             status(&show.title, true);
+            *website.borrow_mut() = None;
+            *selected_show.borrow_mut() = Some(show.clone());
+            website_action.set_enabled(false);
+            unsubscribe_action.set_enabled(store.contains(&show.feed_url));
+            menu.set_visible(true);
             feed_content.set_visible(false);
             clear(&feed_artwork);
             feed_description.set_text("");
             feed_description.set_visible(false);
-            feed_description.set_lines(4);
-            feed_description.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            description_expanded.set(false);
-            read_more.set_label("Read More");
-            read_more.set_visible(false);
+            full_description.borrow_mut().clear();
+            actions.set_visible(false);
+            update_follow_button(&follow_button, store.contains(&show.feed_url));
+            mark_button.set_sensitive(false);
+            mark_action.set_enabled(false);
+            current_episodes.borrow_mut().clear();
             clear(&episodes);
-            view.set_transition_type(gtk::StackTransitionType::SlideLeft);
+            view.set_transition_type(if animate {
+                gtk::StackTransitionType::SlideLeft
+            } else {
+                gtk::StackTransitionType::None
+            });
             view.set_visible_child_name("feed");
             back.set_visible(true);
             back.set_tooltip_text(Some("Back to results"));
@@ -140,6 +268,7 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
             let (tx, rx) = mpsc::channel();
             let fallback_title = show.title.clone();
             let fallback_artwork = show.artwork_urls.clone();
+            let show_for_feed = show.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(discovery_service::feed(&show.feed_url));
             });
@@ -148,9 +277,16 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
             let feed_description = feed_description.clone();
             let feed_artwork = feed_artwork.clone();
             let feed_content = feed_content.clone();
-            let read_more = read_more.clone();
+            let full_description = full_description.clone();
+            let actions = actions.clone();
+            let mark_button = mark_button.clone();
+            let mark_action = mark_action.clone();
+            let current_episodes = current_episodes.clone();
             let status = status.clone();
             let artwork = artwork.clone();
+            let website = website.clone();
+            let website_action = website_action.clone();
+            let store = store.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
                 if generation.get() != id {
                     return gtk::glib::ControlFlow::Break;
@@ -159,6 +295,8 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
                     Ok(answer) => {
                         match answer {
                             Ok(feed) => {
+                                *website.borrow_mut() = feed.website.clone();
+                                website_action.set_enabled(feed.website.is_some());
                                 let title = if feed.title.is_empty() {
                                     fallback_title.clone()
                                 } else {
@@ -176,15 +314,27 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
                                 let feed_description = feed_description.clone();
                                 let feed_content = feed_content.clone();
                                 let episodes = episodes.clone();
-                                let read_more = read_more.clone();
+                                let full_description = full_description.clone();
+                                let actions = actions.clone();
+                                let mark_button = mark_button.clone();
+                                let mark_action = mark_action.clone();
+                                let current_episodes = current_episodes.clone();
                                 let artwork_for_feed = artwork.clone();
                                 let status = status.clone();
+                                let store = store.clone();
+                                let show_for_feed = show_for_feed.clone();
                                 artwork.preload(vec![covers.clone()], move || {
                                     if generation.get() != id {
                                         return;
                                     }
-                                    feed_artwork.append(&artwork_for_feed.cached_widget(&covers, 220));
-                                    show_feed(&feed_description, &read_more, &episodes, feed);
+                                    feed_artwork.append(&artwork_for_feed.cached_widget(&covers, 190));
+                                    let ids = feed.all_episode_ids.clone();
+                                    *current_episodes.borrow_mut() = ids;
+                                    let can_mark = !current_episodes.borrow().is_empty();
+                                    mark_button.set_sensitive(can_mark);
+                                    mark_action.set_enabled(can_mark);
+                                    show_feed(&feed_description, &full_description, &episodes, feed, &store, &show_for_feed.feed_url);
+                                    actions.set_visible(true);
                                     feed_content.set_visible(true);
                                     status(&title, false);
                                 });
@@ -192,6 +342,7 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
                             Err(message) => {
                                 status(&fallback_title, false);
                                 show_message(&episodes, "Could not load RSS feed", &message);
+                                actions.set_visible(true);
                                 feed_content.set_visible(true);
                             }
                         }
@@ -201,11 +352,20 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
                     Err(mpsc::TryRecvError::Disconnected) => {
                         status(&fallback_title, false);
                         show_message(&episodes, "Could not load RSS feed", "The request ended unexpectedly.");
+                        actions.set_visible(true);
                         feed_content.set_visible(true);
                         gtk::glib::ControlFlow::Break
                     }
                 }
             });
+        })
+    };
+    let open_followed: Rc<dyn Fn(Show)> = {
+        let origin_following = origin_following.clone();
+        let open_feed = open_feed.clone();
+        Rc::new(move |show| {
+            origin_following.set(true);
+            open_feed(show, false);
         })
     };
     let request: Rc<dyn Fn(Request)> = {
@@ -217,6 +377,9 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
         let status = status.clone();
         let result_title = result_title.clone();
         let back = back.clone();
+        let menu = menu.clone();
+        let store = store.clone();
+        let toast = toast.clone();
         Rc::new(move |request| {
             let cue_first = matches!(&request, Request::Search(_));
             let title = match &request {
@@ -225,9 +388,14 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
             };
             *result_title.borrow_mut() = title.clone();
             status(&title, true);
+            menu.set_visible(false);
             clear(&listing);
             listing.set_visible(false);
-            view.set_transition_type(gtk::StackTransitionType::SlideLeft);
+            view.set_transition_type(if view.is_mapped() {
+                gtk::StackTransitionType::SlideLeft
+            } else {
+                gtk::StackTransitionType::None
+            });
             view.set_visible_child_name("results");
             back.set_visible(true);
             back.set_tooltip_text(Some("Back to Discover"));
@@ -245,6 +413,8 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
             let listing = listing.clone();
             let generation = generation.clone();
             let open_feed = open_feed.clone();
+            let store = store.clone();
+            let toast = toast.clone();
             let artwork = artwork.clone();
             let status = status.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
@@ -262,12 +432,14 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
                                 let status = status.clone();
                                 let generation = generation.clone();
                                 let title = title.clone();
+                                let store = store.clone();
+                                let toast = toast.clone();
                                 artwork.preload(covers, move || {
                                     if generation.get() != id {
                                         return;
                                     }
                                     clear(&listing);
-                                    show_results(&listing, shows, open_feed, &artwork_for_results, cue_first);
+                                    show_results(&listing, shows, open_feed, &artwork_for_results, cue_first, &store, toast);
                                     listing.set_visible(true);
                                     status(&title, false);
                                 });
@@ -299,13 +471,13 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
         .vexpand(true)
         .build();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 30);
-    content.set_margin_top(24);
-    content.set_margin_bottom(40);
+    content.set_margin_top(16);
+    content.set_margin_bottom(24);
     content.append(&categories(request.clone()));
 
-    let clamp = adw::Clamp::builder().maximum_size(930).build();
-    clamp.set_margin_start(24);
-    clamp.set_margin_end(24);
+    let clamp = adw::Clamp::builder().maximum_size(800).build();
+    clamp.set_margin_start(16);
+    clamp.set_margin_end(16);
     clamp.set_child(Some(&content));
     home.set_child(Some(&clamp));
     view.add_named(&home, Some("home"));
@@ -325,7 +497,11 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
     entry.connect_search_changed(move |entry| {
         if entry.text().trim().is_empty() {
             generation_for_clear.set(generation_for_clear.get().wrapping_add(1));
-            view_for_clear.set_transition_type(gtk::StackTransitionType::SlideRight);
+            view_for_clear.set_transition_type(if view_for_clear.is_mapped() {
+                gtk::StackTransitionType::SlideRight
+            } else {
+                gtk::StackTransitionType::None
+            });
             view_for_clear.set_visible_child_name("home");
             status_for_clear("Discover", false);
             back_for_clear.set_visible(false);
@@ -335,14 +511,22 @@ pub(super) fn page(entry: &gtk::SearchEntry, back: &gtk::Button, status: Rc<dyn 
     let reset_generation = generation.clone();
     let reset_status = status.clone();
     let reset_back = back.clone();
+    let reset_menu = menu.clone();
+    let reset_origin = origin_following.clone();
     let reset: Rc<dyn Fn()> = Rc::new(move || {
         reset_generation.set(reset_generation.get().wrapping_add(1));
-        reset_view.set_transition_type(gtk::StackTransitionType::SlideRight);
+        reset_view.set_transition_type(if reset_view.is_mapped() {
+            gtk::StackTransitionType::SlideRight
+        } else {
+            gtk::StackTransitionType::None
+        });
         reset_view.set_visible_child_name("home");
         reset_status("Discover", false);
         reset_back.set_visible(false);
+        reset_menu.set_visible(false);
+        reset_origin.set(false);
     });
-    DiscoveryPage { widget: view.upcast(), reset }
+    DiscoveryPage { widget: view.upcast(), reset, open_followed }
 }
 
 fn clear(container: &gtk::Box) {
@@ -354,7 +538,7 @@ fn clear(container: &gtk::Box) {
 fn show_message(container: &gtk::Box, title: &str, message: &str) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     content.set_halign(gtk::Align::Center);
-    content.set_margin_top(28);
+    content.set_margin_top(20);
     let heading = gtk::Label::new(Some(title));
     heading.add_css_class("heading");
     content.append(&heading);
@@ -370,9 +554,11 @@ fn show_message(container: &gtk::Box, title: &str, message: &str) {
 fn show_results(
     container: &gtk::Box,
     shows: Vec<Show>,
-    open_feed: Rc<dyn Fn(Show)>,
+    open_feed: Rc<dyn Fn(Show, bool)>,
     artwork: &ArtworkLoader,
     cue_first: bool,
+    store: &Rc<FollowingStore>,
+    toast: Rc<dyn Fn(&str)>,
 ) {
     if shows.is_empty() {
         show_message(container, "No podcasts found", "No matching podcasts were found.");
@@ -389,13 +575,13 @@ fn show_results(
         let over_add = Rc::new(Cell::new(false));
         add_areas.push(over_add.clone());
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        content.set_margin_start(12);
-        content.set_margin_end(12);
-        content.set_margin_top(10);
-        content.set_margin_bottom(10);
+        content.set_margin_start(10);
+        content.set_margin_end(10);
+        content.set_margin_top(8);
+        content.set_margin_bottom(8);
         let layout = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         layout.set_hexpand(true);
-        let cover = artwork.cached_widget(&show.artwork_urls, 64);
+        let cover = artwork.cached_widget(&show.artwork_urls, 56);
         cover.add_css_class("search-artwork");
         layout.append(&cover);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
@@ -426,13 +612,32 @@ fn show_results(
         content.append(&layout);
 
         let add = gtk::Button::new();
-        let add_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        add_content.append(&gtk::Image::from_icon_name("list-add-symbolic"));
-        add_content.append(&gtk::Label::new(Some("Add")));
-        add.set_child(Some(&add_content));
         add.set_valign(gtk::Align::Center);
-        add.set_tooltip_text(Some("Add to Following (coming soon)"));
-        add.set_sensitive(false);
+        update_add_button(&add, store.contains(&show.feed_url));
+        let show_for_add = show.clone();
+        let store_for_add = store.clone();
+        let toast_for_add = toast.clone();
+        add.connect_clicked(move |_| {
+            if store_for_add.contains(&show_for_add.feed_url) {
+                return;
+            }
+            match store_for_add.add(&show_for_add) {
+                Ok(true) => toast_for_add(&format!("Added {} to Following", show_for_add.title)),
+                Ok(false) => {}
+                Err(message) => toast_for_add(&message),
+            }
+        });
+        let weak_add = add.downgrade();
+        let store_for_watch = Rc::downgrade(store);
+        let feed_url = show.feed_url.clone();
+        store.watch(move || {
+            if let (Some(add), Some(store)) = (weak_add.upgrade(), store_for_watch.upgrade()) {
+                update_add_button(&add, store.contains(&feed_url));
+                true
+            } else {
+                false
+            }
+        });
         let add_area = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let add_motion = gtk::EventControllerMotion::new();
         let over_add_on_enter = over_add.clone();
@@ -454,11 +659,151 @@ fn show_results(
         let index = row.index() as usize;
         if let Some(show) = shows.get(index) {
             if !add_areas[index].get() {
-                open_feed(show.clone());
+                open_feed(show.clone(), true);
             }
         }
     });
     container.append(&list);
+}
+
+fn update_add_button(button: &gtk::Button, added: bool) {
+    button.set_sensitive(!added);
+    button.set_tooltip_text(Some(if added {
+        "Already in Following"
+    } else {
+        "Add to Following"
+    }));
+    if added {
+        button.set_child(Some(&gtk::Label::new(Some("Added"))));
+        button.add_css_class("added-button");
+    } else {
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        content.append(&gtk::Image::from_icon_name("list-add-symbolic"));
+        content.append(&gtk::Label::new(Some("Add")));
+        button.set_child(Some(&content));
+        button.remove_css_class("added-button");
+    }
+}
+
+fn update_follow_button(button: &gtk::Button, followed: bool) {
+    button.set_icon_name(if followed {
+        "object-select-symbolic"
+    } else {
+        "list-add-symbolic"
+    });
+    button.set_tooltip_text(Some(if followed {
+        "Unsubscribe"
+    } else {
+        "Add to Following"
+    }));
+}
+
+fn mark_episode_rows(container: &gtk::Box) {
+    if let Some(list) = container.first_child().and_downcast::<gtk::ListBox>() {
+        let mut child = list.first_child();
+        while let Some(row) = child {
+            row.add_css_class("dim-label");
+            child = row.next_sibling();
+        }
+    }
+}
+
+fn show_description_dialog(parent: &gtk::Label, description: &str) {
+    let text = gtk::Label::new(Some(description));
+    text.set_wrap(true);
+    text.set_xalign(0.0);
+    text.set_yalign(0.0);
+    text.set_valign(gtk::Align::Start);
+    text.set_can_focus(false);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.set_margin_top(16);
+    body.set_margin_bottom(24);
+    body.set_margin_start(36);
+    body.set_margin_end(36);
+    body.append(&text);
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&body)
+        .build();
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    toolbar.set_content(Some(&scroller));
+    let dialog = adw::Dialog::builder()
+        .title("About this podcast")
+        .content_width(440)
+        .content_height(360)
+        .child(&toolbar)
+        .build();
+    dialog.present(Some(parent));
+}
+
+type PodcastMenuState = (
+    Rc<RefCell<Option<String>>>,
+    Rc<RefCell<Option<Show>>>,
+    gtk::gio::SimpleAction,
+    gtk::gio::SimpleAction,
+    gtk::gio::SimpleAction,
+);
+
+fn setup_podcast_menu(
+    button: &gtk::MenuButton,
+    store: Rc<FollowingStore>,
+    toast: Rc<dyn Fn(&str)>,
+) -> PodcastMenuState {
+    button.set_visible(false);
+    let model = gtk::gio::Menu::new();
+    model.append(Some("Open Website"), Some("podcast.website"));
+    model.append(Some("Mark All as Played"), Some("podcast.mark-played"));
+    model.append(Some("Play Latest Episode"), Some("podcast.play-latest"));
+    let actions = gtk::gio::Menu::new();
+    actions.append(Some("Unsubscribe"), Some("podcast.unsubscribe"));
+    model.append_section(None, &actions);
+    button.set_menu_model(Some(&model));
+
+    let group = gtk::gio::SimpleActionGroup::new();
+    let website = Rc::new(RefCell::new(None::<String>));
+    let selected_show = Rc::new(RefCell::new(None::<Show>));
+    let website_action = gtk::gio::SimpleAction::new("website", None);
+    website_action.set_enabled(false);
+    let website_for_action = website.clone();
+    let toast_for_website = toast.clone();
+    website_action.connect_activate(move |_, _| {
+        let url = website_for_action.borrow().clone();
+        if let Some(url) = url {
+            if let Err(error) = gtk::gio::AppInfo::launch_default_for_uri(
+                &url,
+                None::<&gtk::gio::AppLaunchContext>,
+            ) {
+                toast_for_website(&format!("Could not open the website: {error}"));
+            }
+        }
+    });
+    group.add_action(&website_action);
+    let mark_action = gtk::gio::SimpleAction::new("mark-played", None);
+    mark_action.set_enabled(false);
+    group.add_action(&mark_action);
+    let play_action = gtk::gio::SimpleAction::new("play-latest", None);
+    play_action.set_enabled(false);
+    group.add_action(&play_action);
+    let unsubscribe = gtk::gio::SimpleAction::new("unsubscribe", None);
+    unsubscribe.set_enabled(false);
+    let selected_for_unsubscribe = selected_show.clone();
+    unsubscribe.connect_activate(move |action, _| {
+        let show = selected_for_unsubscribe.borrow().clone();
+        if let Some(show) = show {
+            match store.remove(&show.feed_url) {
+                Ok(true) => {
+                    action.set_enabled(false);
+                    toast(&format!("Unsubscribed from {}", show.title));
+                }
+                Ok(false) => {}
+                Err(message) => toast(&message),
+            }
+        }
+    });
+    group.add_action(&unsubscribe);
+    button.insert_action_group("podcast", Some(&group));
+    (website, selected_show, website_action, unsubscribe, mark_action)
 }
 
 fn format_search_date(raw: &str) -> Option<String> {
@@ -479,11 +824,25 @@ fn format_search_date(raw: &str) -> Option<String> {
     }
 }
 
-fn show_feed(description: &gtk::Label, read_more: &gtk::Button, episodes: &gtk::Box, feed: FeedDetails) {
+fn show_feed(
+    description: &gtk::Label,
+    full_description: &Rc<RefCell<String>>,
+    episodes: &gtk::Box,
+    feed: FeedDetails,
+    store: &FollowingStore,
+    feed_url: &str,
+) {
     let text = plain_description(&feed.description);
-    description.set_text(&text);
+    *full_description.borrow_mut() = text.clone();
+    if text.chars().count() > 180 {
+        let prefix: String = text.chars().take(180).collect();
+        let prefix = prefix.rsplit_once(' ').map_or(prefix.as_str(), |(head, _)| head);
+        let escaped = gtk::glib::markup_escape_text(prefix);
+        description.set_markup(&format!("{escaped}… <a href=\"more\" class=\"more-link\">More</a>"));
+    } else {
+        description.set_text(&text);
+    }
     description.set_visible(!text.is_empty());
-    read_more.set_visible(text.chars().count() > 180);
     if feed.episodes.is_empty() {
         show_message(episodes, "No episodes found", "This RSS feed has no recent episodes to show.");
         return;
@@ -497,6 +856,9 @@ fn show_feed(description: &gtk::Label, read_more: &gtk::Button, episodes: &gtk::
         row.set_title_lines(2);
         row.set_subtitle(&episode.date);
         row.set_subtitle_lines(1);
+        if store.is_played(feed_url, &episode.id) {
+            row.add_css_class("dim-label");
+        }
         list.append(&row);
     }
     episodes.append(&list);
@@ -529,25 +891,25 @@ fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
         .selection_mode(gtk::SelectionMode::None)
         .max_children_per_line(3)
         .min_children_per_line(1)
-        .column_spacing(12)
-        .row_spacing(12)
+        .column_spacing(10)
+        .row_spacing(10)
         .homogeneous(true)
         .build();
 
     for (icon, name, color) in CATEGORIES.iter() {
         let tile = gtk::Button::new();
-        tile.set_size_request(180, 82);
+        tile.set_size_request(160, 74);
         tile.set_overflow(gtk::Overflow::Hidden);
         tile.add_css_class("category-tile");
         tile.add_css_class(&format!("category-{color}"));
 
         let layout = gtk::Overlay::new();
         let surface = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        surface.set_size_request(-1, 82);
+        surface.set_size_request(-1, 74);
         layout.set_child(Some(&surface));
 
         let image = gtk::Image::from_icon_name(icon);
-        image.set_pixel_size(92);
+        image.set_pixel_size(80);
         image.set_halign(gtk::Align::End);
         image.set_valign(gtk::Align::End);
         image.set_margin_end(8);
@@ -557,8 +919,8 @@ fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
         let label = gtk::Label::new(Some(name));
         label.set_halign(gtk::Align::Start);
         label.set_valign(gtk::Align::End);
-        label.set_margin_start(16);
-        label.set_margin_bottom(11);
+        label.set_margin_start(14);
+        label.set_margin_bottom(9);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         label.add_css_class("category-title");
         layout.add_overlay(&label);

@@ -66,3 +66,44 @@
 .first-result-cue {
   box-shadow: inset 0 0 0 2px @accent_bg_color;
 }
+
+.added-button {
+  background: #1ce783;
+  color: #10271c;
+  border-color: transparent;
+}
+
+.added-button:disabled {
+  background: #1ce783;
+  color: #10271c;
+  opacity: 1;
+}
+
+.following-cover {
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.following-cover:hover {
+  background: alpha(currentColor, 0.08);
+}
+
+.latest-episode-button {
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+}
+
+.podcast-round-action {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+label link.more-link {
+  text-decoration-line: none;
+}
