@@ -4,7 +4,7 @@ use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BASE_URL: &str = "https://api.podcastindex.org";
-const USER_AGENT: &str = "ElitePodcasts/0.1 (io.github.elite.Podcasts; native GNOME podcast app)";
+pub(crate) const USER_AGENT: &str = "ElitePodcasts/0.1 (io.github.elite.Podcasts; native GNOME podcast app)";
 
 #[derive(Clone, Debug)]
 pub struct Show {
@@ -12,6 +12,7 @@ pub struct Show {
     pub author: String,
     pub description: String,
     pub feed_url: String,
+    pub artwork_url: Option<String>,
 }
 
 pub struct Episode {
@@ -22,6 +23,7 @@ pub struct Episode {
 pub struct FeedDetails {
     pub title: String,
     pub description: String,
+    pub artwork_url: Option<String>,
     pub episodes: Vec<Episode>,
 }
 
@@ -37,6 +39,8 @@ struct SearchFeed {
     collection_name: Option<String>,
     artist_name: Option<String>,
     feed_url: Option<String>,
+    artwork_url600: Option<String>,
+    artwork_url100: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +55,8 @@ struct TrendingFeed {
     author: Option<String>,
     description: Option<String>,
     url: Option<String>,
+    image: Option<String>,
+    artwork: Option<String>,
 }
 
 fn agent() -> ureq::Agent {
@@ -91,6 +97,7 @@ pub fn search(term: &str) -> Result<Vec<Show>, String> {
                 author: feed.artist_name.unwrap_or_default(),
                 description: String::new(),
                 feed_url,
+                artwork_url: feed.artwork_url600.or(feed.artwork_url100),
             })
         })
         .collect())
@@ -139,6 +146,7 @@ pub fn category(name: &str) -> Result<Vec<Show>, String> {
                 author: feed.author.unwrap_or_default(),
                 description: feed.description.unwrap_or_default(),
                 feed_url,
+                artwork_url: feed.image.or(feed.artwork),
             })
         })
         .collect())
@@ -179,9 +187,26 @@ pub fn feed(url: &str) -> Result<FeedDetails, String> {
         })
         .filter(|episode| !episode.title.is_empty())
         .collect();
+    let artwork_url = channel
+        .children()
+        .find_map(|node| {
+            if node.is_element() && node.tag_name().name() == "image" {
+                node.attribute("href")
+                    .map(str::to_string)
+                    .or_else(|| {
+                        node.children()
+                            .find(|child| child.has_tag_name("url"))
+                            .and_then(|child| child.text())
+                            .map(str::to_string)
+                    })
+            } else {
+                None
+            }
+        });
     Ok(FeedDetails {
         title: field(channel, "title"),
         description: field(channel, "description"),
+        artwork_url,
         episodes,
     })
 }

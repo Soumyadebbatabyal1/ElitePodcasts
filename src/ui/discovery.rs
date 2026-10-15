@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::data::CATEGORIES;
 use crate::discovery_service::{self, FeedDetails, Show};
+use super::artwork::ArtworkLoader;
 
 #[derive(Clone)]
 enum Request {
@@ -21,6 +22,7 @@ pub(super) struct DiscoveryPage {
 pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> DiscoveryPage {
     let view = gtk::Stack::new();
     view.set_vexpand(true);
+    let artwork = ArtworkLoader::new();
 
     let results = gtk::Box::new(gtk::Orientation::Vertical, 18);
     results.set_margin_top(24);
@@ -51,6 +53,8 @@ pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> 
     feed_back.set_tooltip_text(Some("Back to results"));
     feed_back.set_halign(gtk::Align::Start);
     feed_content.append(&feed_back);
+    let feed_artwork = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    feed_content.append(&feed_artwork);
     let feed_description = gtk::Label::new(None);
     feed_description.set_halign(gtk::Align::Start);
     feed_description.set_wrap(true);
@@ -84,8 +88,11 @@ pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> 
         let view = view.clone();
         let generation = generation.clone();
         let status = status.clone();
+        let artwork = artwork.clone();
         Rc::new(move |show| {
             status(&show.title, true);
+            clear(&feed_artwork);
+            feed_artwork.append(&artwork.widget(show.artwork_url.as_deref(), 160));
             feed_description.set_text("");
             clear(&episodes);
             let spinner = gtk::Spinner::new();
@@ -99,13 +106,16 @@ pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> 
             generation.set(id);
             let (tx, rx) = mpsc::channel();
             let fallback_title = show.title.clone();
+            let fallback_artwork = show.artwork_url.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(discovery_service::feed(&show.feed_url));
             });
             let generation = generation.clone();
             let episodes = episodes.clone();
             let feed_description = feed_description.clone();
+            let feed_artwork = feed_artwork.clone();
             let status = status.clone();
+            let artwork = artwork.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
                 if generation.get() != id {
                     return gtk::glib::ControlFlow::Break;
@@ -116,6 +126,12 @@ pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> 
                         match answer {
                             Ok(feed) => {
                                 status(if feed.title.is_empty() { &fallback_title } else { &feed.title }, false);
+                                if fallback_artwork.is_none() {
+                                    if let Some(url) = feed.artwork_url.as_deref() {
+                                        clear(&feed_artwork);
+                                        feed_artwork.append(&artwork.widget(Some(url), 160));
+                                    }
+                                }
                                 show_feed(&feed_description, &episodes, feed);
                             }
                             Err(message) => {
@@ -151,6 +167,7 @@ pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> 
         let listing = listing.clone();
         let generation = generation.clone();
         let open_feed = open_feed.clone();
+        let artwork = artwork.clone();
         let status = status.clone();
         let result_title = result_title.clone();
         Rc::new(move |request| {
@@ -181,6 +198,7 @@ pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> 
             let listing = listing.clone();
             let generation = generation.clone();
             let open_feed = open_feed.clone();
+            let artwork = artwork.clone();
             let status = status.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
                 if generation.get() != id {
@@ -191,7 +209,7 @@ pub(super) fn page(entry: &gtk::SearchEntry, status: Rc<dyn Fn(&str, bool)>) -> 
                         clear(&listing);
                         status(&title, false);
                         match answer {
-                            Ok(shows) => show_results(&listing, shows, open_feed.clone()),
+                            Ok(shows) => show_results(&listing, shows, open_feed.clone(), &artwork),
                             Err(message) => show_message(&listing, "Could not load podcasts", &message),
                         }
                         gtk::glib::ControlFlow::Break
@@ -269,7 +287,7 @@ fn show_message(container: &gtk::Box, title: &str, message: &str) {
         .build());
 }
 
-fn show_results(container: &gtk::Box, shows: Vec<Show>, open_feed: Rc<dyn Fn(Show)>) {
+fn show_results(container: &gtk::Box, shows: Vec<Show>, open_feed: Rc<dyn Fn(Show)>, artwork: &ArtworkLoader) {
     if shows.is_empty() {
         show_message(container, "No podcasts found", "No matching podcasts were found.");
         return;
@@ -278,10 +296,7 @@ fn show_results(container: &gtk::Box, shows: Vec<Show>, open_feed: Rc<dyn Fn(Sho
         let card = gtk::Button::new();
         card.add_css_class("discovery-result");
         let layout = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-        let icon = gtk::Image::from_icon_name("audio-x-generic-symbolic");
-        icon.set_pixel_size(48);
-        icon.add_css_class("dim-label");
-        layout.append(&icon);
+        layout.append(&artwork.widget(show.artwork_url.as_deref(), 56));
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
         text.set_hexpand(true);
         let title = gtk::Label::new(Some(&show.title));

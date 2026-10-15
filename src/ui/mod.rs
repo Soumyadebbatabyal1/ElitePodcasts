@@ -1,3 +1,4 @@
+mod artwork;
 mod discovery;
 
 use adw::prelude::*;

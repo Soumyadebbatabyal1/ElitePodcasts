@@ -21,7 +21,7 @@ Cargo downloads the Rust crates on the first build. Close any older Elite Podcas
 
 Select the search button, type a podcast name, and press Enter. Search uses Podcast Index's public keyless endpoint. Category tiles load trending feeds with API credentials, except Climate, which uses a public text search. Network requests run in a worker thread so the window remains responsive.
 
-Select a result to read its RSS title, description when available as plain text, and up to 20 recent episode titles and dates. Episode playback is not implemented yet.
+Search and category results show podcast artwork when a valid image URL is available. Select a result to see a larger cover and read its RSS title, description when available as plain text, and up to 20 recent episode titles and dates. Episode playback is not implemented yet. Images are loaded by four background workers, kept in a bounded in-memory cache, and replaced by a symbolic placeholder when unavailable. The cache is cleared when the app exits.
 
 To enable category browsing, obtain your own Podcast Index API key and secret and launch the app with these environment variables set:
 
@@ -36,7 +36,7 @@ Keep credentials out of the repository. If either value is missing, the category
 ## Project layout
 
 - `src/app.rs` starts the libadwaita application and creates its window.
-- `src/ui/` contains the adaptive sidebar, page header, discovery views, and nine-category grid.
+- `src/ui/` contains the adaptive sidebar, page header, discovery views, nine-category grid, and artwork loader.
 - `src/data.rs` defines the category tiles.
 - `src/discovery_service.rs` handles Podcast Index requests and reads public RSS feeds.
 - `assets/artwork/` retains original local SVG placeholder art for a possible future feature; the carousel is currently hidden.
@@ -48,7 +48,7 @@ The app uses GTK4 through gtk4-rs 0.9 and libadwaita through libadwaita-rs 0.7. 
 
 The proposed application ID `io.github.elite.Podcasts` is temporary. Confirm a final reverse-DNS ID before packaging or publishing.
 
-Trending Podcasts, Top Shows, and Recently Updated remain for later passes. Search and category results currently show show names, publishers, and available descriptions with a symbolic placeholder instead of downloaded artwork. The RSS view is informational: audio playback, episode descriptions, and subscriptions are not yet available.
+Trending Podcasts, Top Shows, and Recently Updated remain for later passes. The RSS view is informational: audio playback, episode descriptions, and subscriptions are not yet available.
 
 ## License
 

@@ -54,3 +54,12 @@
   border-radius: 12px;
   background-color: alpha(currentColor, 0.055);
 }
+
+.podcast-artwork,
+.artwork-placeholder {
+  border-radius: 10px;
+}
+
+.artwork-placeholder {
+  background-color: alpha(currentColor, 0.08);
+}
