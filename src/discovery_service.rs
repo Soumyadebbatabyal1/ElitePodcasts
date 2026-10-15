@@ -23,6 +23,10 @@ pub struct Episode {
     pub id: String,
     pub title: String,
     pub date: String,
+    pub description: String,
+    pub audio_url: Option<String>,
+    pub duration_seconds: Option<u64>,
+    pub artwork_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -331,6 +335,31 @@ pub fn feed(url: &str) -> Result<FeedDetails, String> {
             let title = field(node, "title");
             let date = field(node, "pubDate");
             let guid = field(node, "guid");
+            let audio_url = node
+                .children()
+                .filter(|child| child.is_element() && child.tag_name().name() == "enclosure")
+                .find_map(|child| {
+                    let url = child.attribute("url")?.trim();
+                    let kind = child.attribute("type").unwrap_or_default();
+                    (usable_feed_url(url)
+                        && (kind.is_empty()
+                            || kind.starts_with("audio/")
+                            || matches!(
+                                kind,
+                                "application/octet-stream"
+                                    | "application/x-mpegURL"
+                                    | "application/vnd.apple.mpegurl"
+                            )))
+                        .then(|| url.to_string())
+                });
+            let artwork_url = node.children().find_map(|child| {
+                (child.is_element()
+                    && matches!(child.tag_name().name(), "image" | "thumbnail"))
+                    .then(|| child.attribute("href").or_else(|| child.attribute("url")))
+                    .flatten()
+                    .filter(|url| usable_feed_url(url))
+                    .map(str::to_string)
+            });
             Episode {
                 id: if guid.is_empty() {
                     format!("{title}\u{1f}{date}")
@@ -339,6 +368,13 @@ pub fn feed(url: &str) -> Result<FeedDetails, String> {
                 },
                 title,
                 date,
+                description: {
+                    let description = field(node, "description");
+                    if description.is_empty() { field(node, "encoded") } else { description }
+                },
+                audio_url,
+                duration_seconds: parse_duration(&field(node, "duration")),
+                artwork_url,
             }
         })
         .filter(|episode| !episode.title.is_empty())
@@ -368,5 +404,14 @@ pub fn feed(url: &str) -> Result<FeedDetails, String> {
         artwork_url,
         all_episode_ids,
         episodes,
+    })
+}
+
+fn parse_duration(raw: &str) -> Option<u64> {
+    if raw.is_empty() {
+        return None;
+    }
+    raw.split(':').try_fold(0u64, |total, part| {
+        total.checked_mul(60)?.checked_add(part.trim().parse::<u64>().ok()?)
     })
 }

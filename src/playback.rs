@@ -1,0 +1,294 @@
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::Duration;
+
+use gst::prelude::*;
+
+use crate::discovery_service::{Episode, Show};
+use crate::following::FollowingStore;
+
+#[derive(Clone)]
+pub struct PlayingEpisode {
+    pub show_title: String,
+    pub feed_url: String,
+    pub episode: Episode,
+    pub artwork_urls: Vec<String>,
+}
+
+pub struct PlaybackController {
+    player: gst::Element,
+    bus: gst::Bus,
+    store: Rc<FollowingStore>,
+    current: RefCell<Option<PlayingEpisode>>,
+    playing: Cell<bool>,
+    position: Cell<u64>,
+    duration: Cell<u64>,
+    pending_resume: Cell<u64>,
+    rate: Cell<f64>,
+    ticks: Cell<u8>,
+    listeners: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    toast: Rc<dyn Fn(&str)>,
+}
+
+impl PlaybackController {
+    pub fn new(store: Rc<FollowingStore>, toast: Rc<dyn Fn(&str)>) -> Result<Rc<Self>, String> {
+        gst::init().map_err(|error| format!("Could not initialize audio playback: {error}"))?;
+        let player = gst::ElementFactory::make("playbin")
+            .build()
+            .map_err(|error| format!("GStreamer playbin is unavailable: {error}"))?;
+        if let Ok(filter) = gst::ElementFactory::make("scaletempo").build() {
+            player.set_property("audio-filter", &filter);
+        }
+        let bus = player.bus().ok_or("GStreamer did not provide a message bus")?;
+        let controller = Rc::new(Self {
+            player,
+            bus,
+            store,
+            current: RefCell::new(None),
+            playing: Cell::new(false),
+            position: Cell::new(0),
+            duration: Cell::new(0),
+            pending_resume: Cell::new(0),
+            rate: Cell::new(1.0),
+            ticks: Cell::new(0),
+            listeners: RefCell::new(Vec::new()),
+            toast,
+        });
+        let weak = Rc::downgrade(&controller);
+        gtk::glib::timeout_add_local(Duration::from_millis(250), move || {
+            if let Some(controller) = weak.upgrade() {
+                controller.update();
+                gtk::glib::ControlFlow::Continue
+            } else {
+                gtk::glib::ControlFlow::Break
+            }
+        });
+        Ok(controller)
+    }
+
+    pub fn current(&self) -> Option<PlayingEpisode> {
+        self.current.borrow().clone()
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.playing.get()
+    }
+
+    pub fn is_current(&self, feed_url: &str, episode_id: &str) -> bool {
+        self.current.borrow().as_ref().is_some_and(|item| {
+            item.feed_url == feed_url && item.episode.id == episode_id
+        })
+    }
+
+    pub fn play_or_toggle(&self, show: &Show, episode: &Episode) -> Result<(), String> {
+        if self.is_current(&show.feed_url, &episode.id) {
+            self.toggle()
+        } else {
+            self.play_episode(show, episode)
+        }
+    }
+
+    pub fn position(&self) -> u64 {
+        self.position.get()
+    }
+
+    pub fn duration(&self) -> u64 {
+        self.duration.get()
+    }
+
+    pub fn rate(&self) -> f64 {
+        self.rate.get()
+    }
+
+    pub fn watch(&self, listener: impl Fn() -> bool + 'static) {
+        self.listeners.borrow_mut().push(Box::new(listener));
+    }
+
+    pub fn play_episode(&self, show: &Show, episode: &Episode) -> Result<(), String> {
+        let uri = episode.audio_url.as_deref().ok_or("This episode has no audio source")?;
+        self.save_position();
+        self.player
+            .set_state(gst::State::Null)
+            .map_err(|error| format!("Could not stop the previous episode: {error}"))?;
+        while self.bus.pop().is_some() {}
+        self.player.set_property("uri", uri);
+        let mut artwork_urls = Vec::new();
+        if let Some(url) = &episode.artwork_url {
+            artwork_urls.push(url.clone());
+        }
+        artwork_urls.extend(show.artwork_urls.iter().cloned());
+        let duration = episode.duration_seconds.unwrap_or(0);
+        let saved = self.store.playback_position(&show.feed_url, &episode.id);
+        let resume = if duration > 0 && saved.saturating_add(15) >= duration {
+            0
+        } else {
+            saved
+        };
+        *self.current.borrow_mut() = Some(PlayingEpisode {
+            show_title: show.title.clone(),
+            feed_url: show.feed_url.clone(),
+            episode: episode.clone(),
+            artwork_urls,
+        });
+        self.position.set(0);
+        self.duration.set(duration);
+        self.pending_resume.set(resume);
+        self.rate.set(1.0);
+        if let Err(error) = self.player.set_state(gst::State::Playing) {
+            *self.current.borrow_mut() = None;
+            self.pending_resume.set(0);
+            let _ = self.player.set_state(gst::State::Null);
+            self.notify();
+            return Err(format!("Could not start this episode: {error}"));
+        }
+        self.playing.set(true);
+        self.notify();
+        Ok(())
+    }
+
+    pub fn toggle(&self) -> Result<(), String> {
+        if self.current.borrow().is_none() {
+            return Ok(());
+        }
+        if self.playing.get() {
+            self.player
+                .set_state(gst::State::Paused)
+                .map_err(|error| format!("Could not pause playback: {error}"))?;
+            self.playing.set(false);
+            self.save_position();
+        } else {
+            self.player
+                .set_state(gst::State::Playing)
+                .map_err(|error| format!("Could not resume playback: {error}"))?;
+            self.playing.set(true);
+        }
+        self.notify();
+        Ok(())
+    }
+
+    pub fn seek_relative(&self, offset: i64) -> Result<(), String> {
+        let position = self.position.get().saturating_add_signed(offset);
+        self.seek_to(position)
+    }
+
+    pub fn seek_to(&self, seconds: u64) -> Result<(), String> {
+        if self.current.borrow().is_none() {
+            return Ok(());
+        }
+        let limit = self.duration.get();
+        let position = if limit > 0 { seconds.min(limit) } else { seconds };
+        self.pending_resume.set(0);
+        self.player
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, gst::ClockTime::from_seconds(position))
+            .map_err(|error| format!("Could not seek in this episode: {error}"))?;
+        self.position.set(position);
+        self.save_position();
+        self.notify();
+        Ok(())
+    }
+
+    pub fn set_rate(&self, rate: f64) -> Result<(), String> {
+        if self.current.borrow().is_none() || !(0.5..=2.0).contains(&rate) {
+            return Ok(());
+        }
+        let position = self.position.get();
+        self.player
+            .seek(
+                rate,
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::SeekType::Set,
+                gst::ClockTime::from_seconds(position),
+                gst::SeekType::None,
+                None::<gst::ClockTime>,
+            )
+            .map_err(|error| format!("Could not change playback speed: {error}"))?;
+        self.rate.set(rate);
+        self.notify();
+        Ok(())
+    }
+
+    fn update(&self) {
+        let mut ended = false;
+        while let Some(message) = self.bus.pop() {
+            match message.view() {
+                gst::MessageView::Error(error) => {
+                    self.playing.set(false);
+                    self.save_position();
+                    let _ = self.player.set_state(gst::State::Null);
+                    (self.toast)(&format!("Playback failed: {}", error.error()));
+                }
+                gst::MessageView::Eos(_) => {
+                    ended = true;
+                    self.playing.set(false);
+                    self.position.set(0);
+                    self.pending_resume.set(0);
+                    let _ = self.player.set_state(gst::State::Ready);
+                    if let Some(item) = self.current.borrow().as_ref() {
+                        let _ = self.store.save_playback_position(&item.feed_url, &item.episode.id, 0);
+                        let _ = self.store.mark_played(&item.feed_url, &[item.episode.id.clone()]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if self.current.borrow().is_none() {
+            return;
+        }
+        if ended {
+            self.notify();
+            return;
+        }
+        if let Some(duration) = self.player.query_duration::<gst::ClockTime>() {
+            self.duration.set(duration.seconds());
+        }
+        let queried_position = self.player.query_position::<gst::ClockTime>();
+        if self.pending_resume.get() > 0 && (self.duration.get() > 0 || queried_position.is_some()) {
+            let resume = if self.duration.get() > 0 {
+                self.pending_resume.get().min(self.duration.get().saturating_sub(1))
+            } else {
+                self.pending_resume.get()
+            };
+            if self.player.seek_simple(
+                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                gst::ClockTime::from_seconds(resume),
+            ).is_ok() {
+                self.position.set(resume);
+                self.pending_resume.set(0);
+            }
+        } else if let Some(position) = queried_position {
+            self.position.set(position.seconds());
+        }
+        let ticks = self.ticks.get().wrapping_add(1);
+        self.ticks.set(ticks);
+        if ticks >= 20 {
+            self.ticks.set(0);
+            if self.playing.get() {
+                self.save_position();
+            }
+        }
+        self.notify();
+    }
+
+    fn save_position(&self) {
+        if let Some(item) = self.current.borrow().as_ref() {
+            if let Err(error) = self.store.save_playback_position(
+                &item.feed_url,
+                &item.episode.id,
+                self.pending_resume.get().max(self.position.get()),
+            ) {
+                (self.toast)(&error);
+            }
+        }
+    }
+
+    fn notify(&self) {
+        self.listeners.borrow_mut().retain(|listener| listener());
+    }
+}
+
+impl Drop for PlaybackController {
+    fn drop(&mut self) {
+        self.save_position();
+        let _ = self.player.set_state(gst::State::Null);
+    }
+}

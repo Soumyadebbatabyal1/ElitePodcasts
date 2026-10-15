@@ -107,3 +107,63 @@
 label link.more-link {
   text-decoration-line: none;
 }
+
+.player-play-button,
+.episode-play-button {
+  background: alpha(currentColor, 0.08);
+  color: inherit;
+  border: none;
+}
+
+.player-play-button:hover,
+.episode-play-button:hover {
+  background: alpha(currentColor, 0.15);
+}
+
+.player-play-button {
+  background: alpha(black, 0.18);
+  border-radius: 999px;
+}
+
+.player-play-button:hover {
+  background: alpha(black, 0.28);
+}
+
+.player-skip-button,
+.player-skip-button:hover {
+  border-radius: 999px;
+}
+
+.player-artwork,
+.player-artwork .artwork-placeholder {
+  border-radius: 0;
+}
+
+.player-speed-button > button {
+  min-height: 0;
+  padding: 4px 9px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.player-speed-button > button:hover,
+.player-speed-button > button:checked {
+  background: alpha(currentColor, 0.09);
+}
+
+.player-speed-label,
+.player-speed-icon {
+  font-weight: 700;
+  color: inherit;
+}
+
+.player-episode-title {
+  font-weight: 700;
+}
+
+.episode-play-button {
+  border-radius: 999px;
+  padding: 4px 10px;
+}

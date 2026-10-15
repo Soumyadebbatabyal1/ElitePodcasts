@@ -1,12 +1,14 @@
 mod artwork;
 mod discovery;
 mod following;
+mod player;
 
 use adw::prelude::*;
 use gtk::glib::value::ToValue;
 use std::rc::Rc;
 use crate::following::FollowingStore;
 use artwork::ArtworkLoader;
+use crate::playback::PlaybackController;
 
 pub fn window_content() -> gtk::Widget {
     install_styles();
@@ -31,6 +33,17 @@ pub fn window_content() -> gtk::Widget {
             }
         }
     });
+    let playback = match PlaybackController::new(store.clone(), toast.clone()) {
+        Ok(playback) => playback,
+        Err(message) => {
+            return adw::StatusPage::builder()
+                .icon_name("dialog-error-symbolic")
+                .title("Could not start audio playback")
+                .description(&message)
+                .build()
+                .upcast();
+        }
+    };
 
     let split = adw::NavigationSplitView::new();
     split.set_min_sidebar_width(200.0);
@@ -166,7 +179,7 @@ pub fn window_content() -> gtk::Widget {
         spinner_for_following_back.set_opacity(0.0);
     });
     let discovery = discovery::page(
-        &entry, &page_back, &podcast_menu, status, store.clone(), artwork.clone(), toast,
+        &entry, &page_back, &podcast_menu, status, store.clone(), artwork.clone(), playback.clone(), toast.clone(),
         back_to_following,
     );
     pages.add_named(&discovery.widget, Some("discover"));
@@ -202,7 +215,7 @@ pub fn window_content() -> gtk::Widget {
         spinner_for_open_followed.start();
         spinner_for_open_followed.set_opacity(1.0);
     });
-    pages.add_named(&following::page(store, artwork, open_from_following), Some("following"));
+    pages.add_named(&following::page(store, artwork.clone(), open_from_following), Some("following"));
     pages.add_named(&empty_state("New episodes from your shows will appear here.", "media-playlist-repeat-symbolic"), Some("new-episodes"));
     pages.set_visible_child_name("discover");
     main.append(&pages);
@@ -260,6 +273,7 @@ pub fn window_content() -> gtk::Widget {
 
     let adaptive = adw::BreakpointBin::new();
     adaptive.set_size_request(320, 400);
+    adaptive.set_vexpand(true);
     adaptive.set_child(Some(&split));
     let compact = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
         adw::BreakpointConditionLengthType::MaxWidth,
@@ -268,7 +282,10 @@ pub fn window_content() -> gtk::Widget {
     ));
     compact.add_setter(&split, "collapsed", Some(&true.to_value()));
     adaptive.add_breakpoint(compact);
-    toast_overlay.set_child(Some(&adaptive));
+    let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    layout.append(&adaptive);
+    layout.append(&player::bar(playback, artwork, toast));
+    toast_overlay.set_child(Some(&layout));
     toast_overlay.upcast()
 }
 

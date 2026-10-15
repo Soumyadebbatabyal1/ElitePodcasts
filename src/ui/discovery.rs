@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use super::artwork::ArtworkLoader;
 use crate::data::CATEGORIES;
-use crate::discovery_service::{self, FeedDetails, Show};
+use crate::discovery_service::{self, Episode, FeedDetails, Show};
 use crate::following::FollowingStore;
+use crate::playback::PlaybackController;
 
 #[derive(Clone)]
 enum Request {
@@ -28,12 +29,13 @@ pub(super) fn page(
     status: Rc<dyn Fn(&str, bool)>,
     store: Rc<FollowingStore>,
     artwork: Rc<ArtworkLoader>,
+    playback: Rc<PlaybackController>,
     toast: Rc<dyn Fn(&str)>,
     back_to_following: Rc<dyn Fn()>,
 ) -> DiscoveryPage {
     let view = gtk::Stack::new();
     view.set_vexpand(true);
-    let (website, selected_show, website_action, unsubscribe_action, mark_action) =
+    let (website, selected_show, website_action, unsubscribe_action, mark_action, play_action) =
         setup_podcast_menu(menu, store.clone(), toast.clone());
     let origin_following = Rc::new(Cell::new(false));
 
@@ -94,13 +96,48 @@ pub(super) fn page(
     actions.append(&mark_button);
     let latest_button = gtk::Button::new();
     latest_button.add_css_class("latest-episode-button");
-    latest_button.set_tooltip_text(Some("Playback is not available yet"));
+    latest_button.set_tooltip_text(Some("Play the latest episode"));
     latest_button.set_sensitive(false);
     let latest_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    latest_content.append(&gtk::Image::from_icon_name("media-playback-start-symbolic"));
+    let latest_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
+    latest_content.append(&latest_icon);
     latest_content.append(&gtk::Label::new(Some("Latest episode")));
     latest_button.set_child(Some(&latest_content));
     actions.append(&latest_button);
+    let action_for_latest_button = play_action.clone();
+    latest_button.connect_clicked(move |_| action_for_latest_button.activate(None));
+    let current_latest = Rc::new(RefCell::new(None::<Episode>));
+    let latest_icon_weak = latest_icon.downgrade();
+    let latest_for_update = current_latest.clone();
+    let selected_for_update = selected_show.clone();
+    let playback_for_update = Rc::downgrade(&playback);
+    playback.watch(move || {
+        let (Some(icon), Some(playback)) = (latest_icon_weak.upgrade(), playback_for_update.upgrade()) else {
+            return false;
+        };
+        let active = selected_for_update.borrow().as_ref().zip(latest_for_update.borrow().as_ref())
+            .is_some_and(|(show, episode)| playback.is_current(&show.feed_url, &episode.id) && playback.is_playing());
+        icon.set_icon_name(Some(if active {
+            "media-playback-pause-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        }));
+        true
+    });
+    let latest_for_action = current_latest.clone();
+    let selected_for_latest = selected_show.clone();
+    let playback_for_latest = playback.clone();
+    let toast_for_latest = toast.clone();
+    play_action.connect_activate(move |_, _| {
+        if let (Some(show), Some(episode)) = (
+            selected_for_latest.borrow().as_ref(),
+            latest_for_action.borrow().as_ref(),
+        ) {
+            if let Err(error) = playback_for_latest.play_or_toggle(show, episode) {
+                toast_for_latest(&error);
+            }
+        }
+    });
     let follow_button = gtk::Button::from_icon_name("list-add-symbolic");
     follow_button.add_css_class("circular");
     follow_button.add_css_class("podcast-round-action");
@@ -115,7 +152,6 @@ pub(super) fn page(
     let current_episodes = Rc::new(RefCell::new(Vec::<String>::new()));
     let store_for_mark = store.clone();
     let selected_for_mark = selected_show.clone();
-    let episodes_for_mark = episodes.clone();
     let episode_ids_for_mark = current_episodes.clone();
     let toast_for_mark = toast.clone();
     mark_action.connect_activate(move |_, _| {
@@ -125,7 +161,6 @@ pub(super) fn page(
         let ids = episode_ids_for_mark.borrow();
         match store_for_mark.mark_played(&show.feed_url, &ids) {
             Ok(added) => {
-                mark_episode_rows(&episodes_for_mark);
                 toast_for_mark(if added == 0 {
                     "Episodes were already marked as played"
                 } else {
@@ -230,6 +265,11 @@ pub(super) fn page(
         let mark_button = mark_button.clone();
         let current_episodes = current_episodes.clone();
         let mark_action = mark_action.clone();
+        let play_action = play_action.clone();
+        let latest_button = latest_button.clone();
+        let current_latest = current_latest.clone();
+        let playback = playback.clone();
+        let toast = toast.clone();
         let menu = menu.clone();
         let website = website.clone();
         let selected_show = selected_show.clone();
@@ -253,6 +293,9 @@ pub(super) fn page(
             mark_button.set_sensitive(false);
             mark_action.set_enabled(false);
             current_episodes.borrow_mut().clear();
+            *current_latest.borrow_mut() = None;
+            play_action.set_enabled(false);
+            latest_button.set_sensitive(false);
             clear(&episodes);
             view.set_transition_type(if animate {
                 gtk::StackTransitionType::SlideLeft
@@ -286,7 +329,12 @@ pub(super) fn page(
             let artwork = artwork.clone();
             let website = website.clone();
             let website_action = website_action.clone();
-            let store = store.clone();
+            let selected_show = selected_show.clone();
+            let play_action = play_action.clone();
+            let latest_button = latest_button.clone();
+            let current_latest = current_latest.clone();
+            let playback = playback.clone();
+            let toast = toast.clone();
             gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
                 if generation.get() != id {
                     return gtk::glib::ControlFlow::Break;
@@ -321,19 +369,45 @@ pub(super) fn page(
                                 let current_episodes = current_episodes.clone();
                                 let artwork_for_feed = artwork.clone();
                                 let status = status.clone();
-                                let store = store.clone();
                                 let show_for_feed = show_for_feed.clone();
-                                artwork.preload(vec![covers.clone()], move || {
+                                let selected_show = selected_show.clone();
+                                let play_action = play_action.clone();
+                                let latest_button = latest_button.clone();
+                                let current_latest = current_latest.clone();
+                                let playback = playback.clone();
+                                let toast = toast.clone();
+                                let mut artwork_groups = vec![covers.clone()];
+                                for episode in &feed.episodes {
+                                    if let Some(url) = &episode.artwork_url {
+                                        let mut candidates = vec![url.clone()];
+                                        candidates.extend(covers.iter().cloned());
+                                        artwork_groups.push(candidates);
+                                    }
+                                }
+                                artwork.preload(artwork_groups, move || {
                                     if generation.get() != id {
                                         return;
                                     }
+                                    let mut show_for_feed = show_for_feed;
+                                    show_for_feed.artwork_urls = covers.clone();
+                                    *selected_show.borrow_mut() = Some(show_for_feed.clone());
                                     feed_artwork.append(&artwork_for_feed.cached_widget(&covers, 190));
                                     let ids = feed.all_episode_ids.clone();
                                     *current_episodes.borrow_mut() = ids;
                                     let can_mark = !current_episodes.borrow().is_empty();
                                     mark_button.set_sensitive(can_mark);
                                     mark_action.set_enabled(can_mark);
-                                    show_feed(&feed_description, &full_description, &episodes, feed, &store, &show_for_feed.feed_url);
+                                    *current_latest.borrow_mut() = feed.episodes.iter()
+                                        .find(|episode| episode.audio_url.is_some())
+                                        .cloned();
+                                    let can_play = current_latest.borrow().is_some();
+                                    play_action.set_enabled(can_play);
+                                    latest_button.set_sensitive(can_play);
+                                    show_feed(
+                                        &feed_description, &full_description, &episodes, feed,
+                                        &show_for_feed, artwork_for_feed.clone(), &covers,
+                                        playback, toast,
+                                    );
                                     actions.set_visible(true);
                                     feed_content.set_visible(true);
                                     status(&title, false);
@@ -698,16 +772,6 @@ fn update_follow_button(button: &gtk::Button, followed: bool) {
     }));
 }
 
-fn mark_episode_rows(container: &gtk::Box) {
-    if let Some(list) = container.first_child().and_downcast::<gtk::ListBox>() {
-        let mut child = list.first_child();
-        while let Some(row) = child {
-            row.add_css_class("dim-label");
-            child = row.next_sibling();
-        }
-    }
-}
-
 fn show_description_dialog(parent: &gtk::Label, description: &str) {
     let text = gtk::Label::new(Some(description));
     text.set_wrap(true);
@@ -740,6 +804,7 @@ fn show_description_dialog(parent: &gtk::Label, description: &str) {
 type PodcastMenuState = (
     Rc<RefCell<Option<String>>>,
     Rc<RefCell<Option<Show>>>,
+    gtk::gio::SimpleAction,
     gtk::gio::SimpleAction,
     gtk::gio::SimpleAction,
     gtk::gio::SimpleAction,
@@ -803,7 +868,7 @@ fn setup_podcast_menu(
     });
     group.add_action(&unsubscribe);
     button.insert_action_group("podcast", Some(&group));
-    (website, selected_show, website_action, unsubscribe, mark_action)
+    (website, selected_show, website_action, unsubscribe, mark_action, play_action)
 }
 
 fn format_search_date(raw: &str) -> Option<String> {
@@ -829,8 +894,11 @@ fn show_feed(
     full_description: &Rc<RefCell<String>>,
     episodes: &gtk::Box,
     feed: FeedDetails,
-    store: &FollowingStore,
-    feed_url: &str,
+    show: &Show,
+    artwork: Rc<ArtworkLoader>,
+    covers: &[String],
+    playback: Rc<PlaybackController>,
+    toast: Rc<dyn Fn(&str)>,
 ) {
     let text = plain_description(&feed.description);
     *full_description.borrow_mut() = text.clone();
@@ -850,18 +918,254 @@ fn show_feed(
     let list = gtk::ListBox::new();
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk::SelectionMode::None);
-    for episode in feed.episodes {
-        let row = adw::ActionRow::new();
-        row.set_title(&episode.title);
-        row.set_title_lines(2);
-        row.set_subtitle(&episode.date);
-        row.set_subtitle_lines(1);
-        if store.is_played(feed_url, &episode.id) {
-            row.add_css_class("dim-label");
+    list.set_activate_on_single_click(true);
+    let all_episodes = feed.episodes;
+    let mut over_play_buttons = Vec::with_capacity(all_episodes.len());
+    for episode in &all_episodes {
+        let row = gtk::ListBoxRow::new();
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+        content.set_margin_top(13);
+        content.set_margin_bottom(13);
+        content.set_margin_start(12);
+        content.set_margin_end(12);
+        let mut candidates = Vec::new();
+        if let Some(url) = &episode.artwork_url {
+            candidates.push(url.clone());
         }
+        candidates.extend(covers.iter().cloned());
+        let cover = artwork.cached_widget(&candidates, 68);
+        cover.set_valign(gtk::Align::Center);
+        content.append(&cover);
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        text.set_hexpand(true);
+        text.set_valign(gtk::Align::Center);
+        let date = gtk::Label::new(Some(&format_episode_date(&episode.date)));
+        date.set_xalign(0.0);
+        date.add_css_class("caption");
+        date.add_css_class("dim-label");
+        text.append(&date);
+        let title = gtk::Label::new(Some(&episode.title));
+        title.set_xalign(0.0);
+        title.set_wrap(true);
+        title.set_lines(2);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        title.add_css_class("heading");
+        text.append(&title);
+        let summary = plain_description(&episode.description);
+        if !summary.is_empty() {
+            let preview = gtk::Label::new(Some(&summary));
+            preview.set_xalign(0.0);
+            preview.set_wrap(true);
+            preview.set_lines(if episode.title.chars().count() > 55 { 1 } else { 2 });
+            preview.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            preview.add_css_class("caption");
+            preview.add_css_class("dim-label");
+            text.append(&preview);
+        }
+        content.append(&text);
+        let play_button = gtk::Button::new();
+        play_button.add_css_class("episode-play-button");
+        play_button.set_valign(gtk::Align::Center);
+        let play_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let play_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
+        play_content.append(&play_icon);
+        if let Some(seconds) = episode.duration_seconds {
+            let minutes = (seconds + 30) / 60;
+            play_content.append(&gtk::Label::new(Some(&format!("{minutes} min"))));
+        }
+        play_button.set_child(Some(&play_content));
+        play_button.set_tooltip_text(Some("Play episode"));
+        play_button.set_sensitive(episode.audio_url.is_some());
+        let feed_url = show.feed_url.clone();
+        let episode_id = episode.id.clone();
+        update_episode_play_icon(&play_icon, &play_button, &playback, &feed_url, &episode_id);
+        let weak_icon = play_icon.downgrade();
+        let weak_button = play_button.downgrade();
+        let weak_playback = Rc::downgrade(&playback);
+        playback.watch(move || {
+            let (Some(icon), Some(button), Some(playback)) = (
+                weak_icon.upgrade(), weak_button.upgrade(), weak_playback.upgrade(),
+            ) else {
+                return false;
+            };
+            update_episode_play_icon(&icon, &button, &playback, &feed_url, &episode_id);
+            true
+        });
+        let over_play = Rc::new(Cell::new(false));
+        let motion = gtk::EventControllerMotion::new();
+        let entered = over_play.clone();
+        motion.connect_enter(move |_, _, _| entered.set(true));
+        let left = over_play.clone();
+        motion.connect_leave(move |_| left.set(false));
+        play_button.add_controller(motion);
+        over_play_buttons.push(over_play);
+        let show_for_play = show.clone();
+        let episode_for_play = episode.clone();
+        let playback_for_play = playback.clone();
+        let toast_for_play = toast.clone();
+        play_button.connect_clicked(move |_| {
+            if let Err(error) = playback_for_play.play_or_toggle(&show_for_play, &episode_for_play) {
+                toast_for_play(&error);
+            }
+        });
+        content.append(&play_button);
+        row.set_child(Some(&content));
         list.append(&row);
     }
+    let show_for_dialog = show.clone();
+    let artwork_for_dialog = artwork.clone();
+    let covers_for_dialog = covers.to_vec();
+    list.connect_row_activated(move |_, row| {
+        let index = row.index() as usize;
+        if !over_play_buttons.get(index).is_some_and(|over| over.get()) {
+            if let Some(episode) = all_episodes.get(index) {
+                show_episode_dialog(
+                    row, &show_for_dialog, episode, &artwork_for_dialog,
+                    &covers_for_dialog, playback.clone(), toast.clone(),
+                );
+            }
+        }
+    });
     episodes.append(&list);
+}
+
+fn update_episode_play_icon(
+    icon: &gtk::Image,
+    button: &gtk::Button,
+    playback: &PlaybackController,
+    feed_url: &str,
+    episode_id: &str,
+) {
+    let active = playback.is_current(feed_url, episode_id) && playback.is_playing();
+    icon.set_icon_name(Some(if active {
+        "media-playback-pause-symbolic"
+    } else {
+        "media-playback-start-symbolic"
+    }));
+    button.set_tooltip_text(Some(if active { "Pause episode" } else { "Play episode" }));
+}
+
+fn show_episode_dialog(
+    parent: &gtk::ListBoxRow,
+    show: &Show,
+    episode: &Episode,
+    artwork: &ArtworkLoader,
+    covers: &[String],
+    playback: Rc<PlaybackController>,
+    toast: Rc<dyn Fn(&str)>,
+) {
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 16);
+    body.set_margin_top(20);
+    body.set_margin_bottom(24);
+    body.set_margin_start(24);
+    body.set_margin_end(24);
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    let mut candidates = Vec::new();
+    if let Some(url) = &episode.artwork_url {
+        candidates.push(url.clone());
+    }
+    candidates.extend(covers.iter().cloned());
+    heading.append(&artwork.cached_widget(&candidates, 88));
+    let heading_text = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    heading_text.set_valign(gtk::Align::Center);
+    let title = gtk::Label::new(Some(&episode.title));
+    title.set_xalign(0.0);
+    title.set_wrap(true);
+    title.add_css_class("title-3");
+    heading_text.append(&title);
+    let mut details = format_episode_date(&episode.date);
+    if let Some(seconds) = episode.duration_seconds {
+        details.push_str(&format!(" · {} min", (seconds + 30) / 60));
+    }
+    let subtitle = gtk::Label::new(Some(&details));
+    subtitle.set_xalign(0.0);
+    subtitle.add_css_class("dim-label");
+    heading_text.append(&subtitle);
+    heading.append(&heading_text);
+    body.append(&heading);
+    let description = plain_description(&episode.description);
+    let summary = gtk::Label::new(Some(if description.is_empty() {
+        "No episode description is available."
+    } else {
+        &description
+    }));
+    summary.set_xalign(0.0);
+    summary.set_yalign(0.0);
+    summary.set_wrap(true);
+    body.append(&summary);
+    let play = gtk::Button::with_label("Play episode");
+    play.add_css_class("episode-play-button");
+    play.set_halign(gtk::Align::Start);
+    play.set_sensitive(episode.audio_url.is_some());
+    body.append(&play);
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&body)
+        .build();
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    toolbar.set_content(Some(&scroller));
+    let dialog = adw::Dialog::builder()
+        .title("Episode details")
+        .content_width(500)
+        .content_height(420)
+        .child(&toolbar)
+        .build();
+    let show = show.clone();
+    let episode = episode.clone();
+    let dialog_for_play = dialog.clone();
+    play.connect_clicked(move |_| {
+        match playback.play_or_toggle(&show, &episode) {
+            Ok(()) => {
+                dialog_for_play.close();
+            }
+            Err(error) => toast(&error),
+        }
+    });
+    dialog.present(Some(parent));
+}
+
+fn format_episode_date(raw: &str) -> String {
+    let raw = raw.trim();
+    let parts: Vec<&str> = raw.trim_start_matches(|character: char| character.is_ascii_alphabetic() || character == ',')
+        .split_whitespace().collect();
+    if parts.len() < 4 {
+        return raw.to_string();
+    }
+    let month = match parts[1].to_ascii_lowercase().as_str() {
+        "jan" => 1, "feb" => 2, "mar" => 3, "apr" => 4, "may" => 5, "jun" => 6,
+        "jul" => 7, "aug" => 8, "sep" => 9, "oct" => 10, "nov" => 11, "dec" => 12,
+        _ => return raw.to_string(),
+    };
+    let day = parts[0].parse::<u8>().unwrap_or(0);
+    let year = parts[2].parse::<i32>().unwrap_or(0);
+    let zone = parts.get(4).copied().unwrap_or("+0000");
+    let offset = if zone.len() == 5 && (zone.starts_with('+') || zone.starts_with('-')) {
+        format!("{}:{}", &zone[..3], &zone[3..])
+    } else {
+        "+00:00".to_string()
+    };
+    let iso = format!("{year:04}-{month:02}-{day:02}T{}{offset}", parts[3]);
+    let Some(published) = gtk::glib::DateTime::from_iso8601(&iso, None).ok()
+        .and_then(|date| date.to_local().ok()) else {
+        return raw.to_string();
+    };
+    let Some(now) = gtk::glib::DateTime::now_local().ok() else {
+        return raw.to_string();
+    };
+    let age = now.to_unix() - published.to_unix();
+    if (0..3600).contains(&age) {
+        format!("{} min ago", (age / 60).max(1))
+    } else if (0..86400).contains(&age) {
+        format!("{} hr ago", age / 3600)
+    } else if (86400..172800).contains(&age) {
+        "Yesterday".to_string()
+    } else if (0..604800).contains(&age) {
+        format!("{} days ago", age / 86400)
+    } else {
+        let format = if published.year() == now.year() { "%e %b" } else { "%e %b %Y" };
+        published.format(format).map(|value| value.trim().to_string()).unwrap_or_else(|_| raw.to_string())
+    }
 }
 
 fn plain_description(raw: &str) -> String {

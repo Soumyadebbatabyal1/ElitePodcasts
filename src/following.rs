@@ -32,6 +32,13 @@ impl FollowingStore {
                 episode_id TEXT NOT NULL,
                 played_at INTEGER NOT NULL DEFAULT (unixepoch()),
                 PRIMARY KEY (feed_url, episode_id)
+            );
+            CREATE TABLE IF NOT EXISTS playback_positions (
+                feed_url TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                position_seconds INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (feed_url, episode_id)
             );",
             )
             .map_err(|error| format!("Could not prepare the podcast database: {error}"))?;
@@ -130,14 +137,34 @@ impl FollowingStore {
         Ok(added)
     }
 
-    pub fn is_played(&self, feed_url: &str, episode_id: &str) -> bool {
+    pub fn playback_position(&self, feed_url: &str, episode_id: &str) -> u64 {
         self.connection
             .query_row(
-                "SELECT 1 FROM played_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+                "SELECT position_seconds FROM playback_positions WHERE feed_url = ?1 AND episode_id = ?2",
                 params![feed_url, episode_id],
-                |_| Ok(()),
+                |row| row.get::<_, i64>(0),
             )
-            .is_ok()
+            .unwrap_or(0)
+            .max(0) as u64
+    }
+
+    pub fn save_playback_position(
+        &self,
+        feed_url: &str,
+        episode_id: &str,
+        seconds: u64,
+    ) -> Result<(), String> {
+        self.connection
+            .execute(
+                "INSERT INTO playback_positions (feed_url, episode_id, position_seconds)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(feed_url, episode_id) DO UPDATE SET
+                   position_seconds = excluded.position_seconds,
+                   updated_at = unixepoch()",
+                params![feed_url, episode_id, seconds.min(i64::MAX as u64) as i64],
+            )
+            .map_err(|error| format!("Could not save playback position: {error}"))?;
+        Ok(())
     }
 
     fn notify(&self) {
