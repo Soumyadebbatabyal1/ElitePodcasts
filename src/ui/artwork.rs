@@ -4,16 +4,17 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::discovery_service::USER_AGENT;
 
 const MAX_IMAGE_BYTES: u64 = 3 * 1024 * 1024;
 const MAX_CACHED_IMAGES: usize = 128;
+const BATCH_WAIT: Duration = Duration::from_secs(15);
 
 pub struct ArtworkLoader {
     jobs: mpsc::Sender<String>,
-    pending: RefCell<HashMap<String, Vec<gtk::glib::WeakRef<gtk::Picture>>>>,
+    pending: RefCell<HashSet<String>>,
     cache: RefCell<HashMap<String, gtk::gdk::Texture>>,
     failed: RefCell<HashSet<String>>,
 }
@@ -39,7 +40,7 @@ impl ArtworkLoader {
         }
         let loader = Rc::new(Self {
             jobs: jobs_tx,
-            pending: RefCell::new(HashMap::new()),
+            pending: RefCell::new(HashSet::new()),
             cache: RefCell::new(HashMap::new()),
             failed: RefCell::new(HashSet::new()),
         });
@@ -49,7 +50,7 @@ impl ArtworkLoader {
                 return gtk::glib::ControlFlow::Break;
             };
             while let Ok((url, bytes)) = done_rx.try_recv() {
-                let pictures = loader.pending.borrow_mut().remove(&url).unwrap_or_default();
+                loader.pending.borrow_mut().remove(&url);
                 if let Some(texture) = bytes.and_then(|bytes| decode(&bytes)) {
                     let mut cache = loader.cache.borrow_mut();
                     if cache.len() >= MAX_CACHED_IMAGES {
@@ -57,12 +58,7 @@ impl ArtworkLoader {
                             cache.remove(&old_url);
                         }
                     }
-                    cache.insert(url, texture.clone());
-                    for picture in pictures {
-                        if let Some(picture) = picture.upgrade() {
-                            picture.set_paintable(Some(&texture));
-                        }
-                    }
+                    cache.insert(url, texture);
                 } else {
                     loader.failed.borrow_mut().insert(url);
                 }
@@ -72,7 +68,43 @@ impl ArtworkLoader {
         loader
     }
 
-    pub fn widget(&self, url: Option<&str>, size: i32) -> gtk::Widget {
+    pub fn cached_widget(&self, candidates: &[String], size: i32) -> gtk::Widget {
+        let selected = candidates
+            .iter()
+            .find(|url| self.cache.borrow().contains_key(url.as_str()));
+        self.make_widget(selected.map(String::as_str), size)
+    }
+
+    pub fn preload(self: &Rc<Self>, groups: Vec<Vec<String>>, ready: impl FnOnce() + 'static) {
+        for candidates in &groups {
+            self.advance(candidates);
+        }
+        let loader = self.clone();
+        let started = Instant::now();
+        let mut ready = Some(ready);
+        gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
+            if started.elapsed() >= BATCH_WAIT {
+                if let Some(ready) = ready.take() {
+                    ready();
+                }
+                return gtk::glib::ControlFlow::Break;
+            }
+            let finished = groups
+                .iter()
+                .map(|candidates| loader.advance(candidates))
+                .fold(true, |all_ready, ready| all_ready && ready);
+            if finished {
+                if let Some(ready) = ready.take() {
+                    ready();
+                }
+                gtk::glib::ControlFlow::Break
+            } else {
+                gtk::glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    fn make_widget(&self, url: Option<&str>, size: i32) -> gtk::Widget {
         let overlay = gtk::Overlay::new();
         overlay.set_size_request(size, size);
         overlay.set_overflow(gtk::Overflow::Hidden);
@@ -92,27 +124,45 @@ impl ArtworkLoader {
         picture.set_size_request(size, size);
         overlay.add_overlay(&picture);
         if let Some(url) = url {
-            self.load(url, picture);
+            if let Some(texture) = self.cache.borrow().get(url) {
+                picture.set_paintable(Some(texture));
+            }
         }
         overlay.upcast()
     }
 
-    fn load(&self, url: &str, picture: gtk::Picture) {
-        if url.len() > 2048 || !(url.starts_with("https://") || url.starts_with("http://")) {
-            return;
+    fn valid_url(url: &str) -> bool {
+        url.len() <= 2048 && (url.starts_with("https://") || url.starts_with("http://"))
+    }
+
+    fn is_ready(&self, url: &str) -> bool {
+        !Self::valid_url(url)
+            || self.cache.borrow().contains_key(url)
+            || self.failed.borrow().contains(url)
+    }
+
+    fn advance(&self, candidates: &[String]) -> bool {
+        for url in candidates {
+            if !Self::valid_url(url) || self.failed.borrow().contains(url) {
+                continue;
+            }
+            if self.cache.borrow().contains_key(url) {
+                return true;
+            }
+            if !self.pending.borrow().contains(url) {
+                self.request(url);
+            }
+            return false;
         }
-        if let Some(texture) = self.cache.borrow().get(url) {
-            picture.set_paintable(Some(texture));
-            return;
-        }
-        if self.failed.borrow().contains(url) {
+        true
+    }
+
+    fn request(&self, url: &str) {
+        if !Self::valid_url(url) || self.is_ready(url) {
             return;
         }
         let mut pending = self.pending.borrow_mut();
-        if let Some(pictures) = pending.get_mut(url) {
-            pictures.push(picture.downgrade());
-        } else {
-            pending.insert(url.to_string(), vec![picture.downgrade()]);
+        if pending.insert(url.to_string()) {
             let _ = self.jobs.send(url.to_string());
         }
     }
@@ -120,7 +170,7 @@ impl ArtworkLoader {
 
 fn fetch(url: &str) -> Option<Vec<u8>> {
     let response = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(5))
         .user_agent(USER_AGENT)
         .build()
         .get(url)
@@ -143,8 +193,8 @@ fn decode(bytes: &[u8]) -> Option<gtk::gdk::Texture> {
     let loader = gtk::gdk_pixbuf::PixbufLoader::new();
     loader.connect_size_prepared(|loader, width, height| {
         let largest = width.max(height);
-        if largest > 256 {
-            let scale = 256.0 / f64::from(largest);
+        if largest > 512 {
+            let scale = 512.0 / f64::from(largest);
             loader.set_size(
                 (f64::from(width) * scale).round().max(1.0) as i32,
                 (f64::from(height) * scale).round().max(1.0) as i32,

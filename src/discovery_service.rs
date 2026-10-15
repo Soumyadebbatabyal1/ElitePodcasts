@@ -3,16 +3,19 @@ use sha1::{Digest, Sha1};
 use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const BASE_URL: &str = "https://api.podcastindex.org";
+const PODCAST_INDEX_URL: &str = "https://api.podcastindex.org";
+const FYYD_SEARCH_URL: &str = "https://api.fyyd.de/0.2/search/podcast";
+const APPLE_SEARCH_URL: &str = "https://itunes.apple.com/search";
+const MAX_FEED_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const USER_AGENT: &str = "ElitePodcasts/0.1 (io.github.elite.Podcasts; native GNOME podcast app)";
 
 #[derive(Clone, Debug)]
 pub struct Show {
     pub title: String,
     pub author: String,
-    pub description: String,
     pub feed_url: String,
-    pub artwork_url: Option<String>,
+    pub artwork_urls: Vec<String>,
+    pub updated: Option<String>,
 }
 
 pub struct Episode {
@@ -28,19 +31,44 @@ pub struct FeedDetails {
 }
 
 #[derive(Deserialize)]
-struct SearchResponse {
+struct AppleSearchResponse {
     #[serde(default)]
-    results: Vec<SearchFeed>,
+    results: Vec<AppleSearchFeed>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SearchFeed {
+struct AppleSearchFeed {
     collection_name: Option<String>,
     artist_name: Option<String>,
     feed_url: Option<String>,
     artwork_url600: Option<String>,
     artwork_url100: Option<String>,
+    release_date: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FyydSearchResponse {
+    #[serde(default)]
+    data: Vec<FyydFeed>,
+}
+
+#[derive(Deserialize)]
+struct FyydFeed {
+    title: Option<String>,
+    author: Option<String>,
+    #[serde(rename = "xmlURL")]
+    feed_url: Option<String>,
+    #[serde(rename = "layoutImageURL")]
+    layout_image_url: Option<String>,
+    #[serde(rename = "thumbImageURL")]
+    thumb_image_url: Option<String>,
+    #[serde(rename = "smallImageURL")]
+    small_image_url: Option<String>,
+    #[serde(rename = "imgURL")]
+    image_url: Option<String>,
+    status: Option<u16>,
+    lastpub: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -53,7 +81,6 @@ struct TrendingResponse {
 struct TrendingFeed {
     title: Option<String>,
     author: Option<String>,
-    description: Option<String>,
     url: Option<String>,
     image: Option<String>,
     artwork: Option<String>,
@@ -66,22 +93,114 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
-fn request_error(error: ureq::Error) -> String {
+fn request_error(service: &str, error: ureq::Error) -> String {
     match error {
-        ureq::Error::Status(code, _) => format!("Podcast Index returned HTTP {code}."),
-        ureq::Error::Transport(error) => format!("Could not reach Podcast Index: {error}"),
+        ureq::Error::Status(code, _) => format!("{service} returned HTTP {code}."),
+        ureq::Error::Transport(error) => format!("Could not reach {service}: {error}"),
     }
 }
 
 pub fn search(term: &str) -> Result<Vec<Show>, String> {
+    let (fyyd, apple) = std::thread::scope(|scope| {
+        let fyyd = scope.spawn(|| search_fyyd(term));
+        let apple = scope.spawn(|| search_apple(term));
+        (
+            fyyd.join().unwrap_or_else(|_| Err("fyyd search stopped unexpectedly.".into())),
+            apple.join().unwrap_or_else(|_| Err("Apple search stopped unexpectedly.".into())),
+        )
+    });
+    if let (Err(fyyd_error), Err(apple_error)) = (&fyyd, &apple) {
+        return Err(format!(
+            "Both podcast directories failed. fyyd: {fyyd_error} Apple: {apple_error}"
+        ));
+    }
+    let mut shows = fyyd.unwrap_or_default();
+    for show in apple.unwrap_or_default() {
+        if let Some(existing) = shows.iter_mut().find(|existing: &&mut Show| {
+            existing.feed_url == show.feed_url
+                || (existing.title.eq_ignore_ascii_case(&show.title)
+                    && existing.author.eq_ignore_ascii_case(&show.author)
+                    && !existing.author.is_empty())
+        }) {
+            let mut artwork_urls = show.artwork_urls;
+            artwork_urls.append(&mut existing.artwork_urls);
+            existing.artwork_urls = artwork_candidates(artwork_urls.into_iter().map(Some));
+            if existing.updated.is_none() {
+                existing.updated = show.updated;
+            }
+        } else {
+            shows.push(show);
+        }
+    }
+    let query = term.trim().to_lowercase();
+    let words: Vec<&str> = query.split_whitespace().collect();
+    shows.sort_by_key(|show| {
+        let title = show.title.to_lowercase();
+        let author = show.author.to_lowercase();
+        if title == query {
+            0
+        } else if title.starts_with(&query) {
+            1
+        } else if title.contains(&query) {
+            2
+        } else if !words.is_empty() && words.iter().all(|word| title.contains(word)) {
+            3
+        } else if author.contains(&query) {
+            4
+        } else {
+            5
+        }
+    });
+    Ok(shows)
+}
+
+fn search_fyyd(term: &str) -> Result<Vec<Show>, String> {
     let query = percent_encoding::utf8_percent_encode(term, percent_encoding::NON_ALPHANUMERIC);
-    let url = format!("{BASE_URL}/search?term={query}");
-    let response: SearchResponse = agent()
+    let url = format!("{FYYD_SEARCH_URL}?term={query}&count=15");
+    let response: FyydSearchResponse = agent()
         .get(&url)
         .call()
-        .map_err(request_error)?
+        .map_err(|error| request_error("fyyd", error))?
         .into_json()
-        .map_err(|error| format!("Could not read search results: {error}"))?;
+        .map_err(|error| format!("Could not read fyyd search results: {error}"))?;
+
+    Ok(response
+        .data
+        .into_iter()
+        .filter_map(|feed| {
+            if feed.status.is_some_and(|status| status >= 400) {
+                return None;
+            }
+            let title = feed.title?.trim().to_string();
+            let feed_url = feed.feed_url?.trim().to_string();
+            if title.is_empty() || !usable_feed_url(&feed_url) {
+                return None;
+            }
+            Some(Show {
+                title,
+                author: feed.author.unwrap_or_default(),
+                feed_url,
+                artwork_urls: artwork_candidates([
+                    feed.image_url,
+                    feed.layout_image_url,
+                    feed.small_image_url,
+                    feed.thumb_image_url,
+                ]),
+                updated: feed.lastpub,
+            })
+        })
+        .collect())
+}
+
+fn search_apple(term: &str) -> Result<Vec<Show>, String> {
+    let query = percent_encoding::utf8_percent_encode(term, percent_encoding::NON_ALPHANUMERIC);
+    let url = format!("{APPLE_SEARCH_URL}?term={query}&media=podcast&entity=podcast&limit=15");
+    let response: AppleSearchResponse = agent()
+        .get(&url)
+        .call()
+        .map_err(|error| request_error("Apple Podcasts", error))?
+        .into_json()
+        .map_err(|error| format!("Could not read Apple Podcasts search results: {error}"))?;
 
     Ok(response
         .results
@@ -89,18 +208,33 @@ pub fn search(term: &str) -> Result<Vec<Show>, String> {
         .filter_map(|feed| {
             let title = feed.collection_name?.trim().to_string();
             let feed_url = feed.feed_url?.trim().to_string();
-            if title.is_empty() || feed_url.is_empty() {
+            if title.is_empty() || !usable_feed_url(&feed_url) {
                 return None;
             }
             Some(Show {
                 title,
                 author: feed.artist_name.unwrap_or_default(),
-                description: String::new(),
                 feed_url,
-                artwork_url: feed.artwork_url600.or(feed.artwork_url100),
+                artwork_urls: artwork_candidates([feed.artwork_url600, feed.artwork_url100]),
+                updated: feed.release_date,
             })
         })
         .collect())
+}
+
+fn usable_feed_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+fn artwork_candidates(urls: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for url in urls.into_iter().flatten() {
+        let url = url.trim();
+        if usable_feed_url(url) && !candidates.iter().any(|candidate| candidate == url) {
+            candidates.push(url.to_string());
+        }
+    }
+    candidates
 }
 
 pub fn category(name: &str) -> Result<Vec<Show>, String> {
@@ -121,14 +255,14 @@ pub fn category(name: &str) -> Result<Vec<Show>, String> {
         .to_string();
     let signature = format!("{:x}", Sha1::digest(format!("{key}{secret}{timestamp}").as_bytes()));
     let query = percent_encoding::utf8_percent_encode(category_name, percent_encoding::NON_ALPHANUMERIC);
-    let url = format!("{BASE_URL}/api/1.0/podcasts/trending?cat={query}&max=30");
+    let url = format!("{PODCAST_INDEX_URL}/api/1.0/podcasts/trending?cat={query}&max=30");
     let response: TrendingResponse = agent()
         .get(&url)
         .set("X-Auth-Key", &key)
         .set("X-Auth-Date", &timestamp)
         .set("Authorization", &signature)
         .call()
-        .map_err(request_error)?
+        .map_err(|error| request_error("Podcast Index", error))?
         .into_json()
         .map_err(|error| format!("Could not read category results: {error}"))?;
 
@@ -144,27 +278,35 @@ pub fn category(name: &str) -> Result<Vec<Show>, String> {
             Some(Show {
                 title,
                 author: feed.author.unwrap_or_default(),
-                description: feed.description.unwrap_or_default(),
                 feed_url,
-                artwork_url: feed.image.or(feed.artwork),
+                artwork_urls: artwork_candidates([feed.image, feed.artwork]),
+                updated: None,
             })
         })
         .collect())
 }
 
 pub fn feed(url: &str) -> Result<FeedDetails, String> {
-    if !url.starts_with("https://") && !url.starts_with("http://") {
+    if !usable_feed_url(url) {
         return Err("This show does not have a usable RSS URL.".into());
     }
-    let response = agent().get(url).call().map_err(request_error)?;
-    let mut xml = String::new();
+    let response = agent()
+        .get(url)
+        .call()
+        .map_err(|error| request_error("The podcast host", error))?;
+    let mut xml_bytes = Vec::new();
     response
         .into_reader()
-        .take(8 * 1024 * 1024)
-        .read_to_string(&mut xml)
+        .take(MAX_FEED_BYTES + 1)
+        .read_to_end(&mut xml_bytes)
         .map_err(|error| format!("Could not read the RSS feed: {error}"))?;
+    if xml_bytes.len() as u64 > MAX_FEED_BYTES {
+        return Err("This podcast's RSS feed is larger than the 32 MB limit.".to_string());
+    }
+    let xml = String::from_utf8(xml_bytes)
+        .map_err(|_| "This podcast's RSS feed is not encoded as UTF-8.".to_string())?;
     let document = roxmltree::Document::parse(&xml)
-        .map_err(|error| format!("Could not parse the RSS feed: {error}"))?;
+        .map_err(|_| "This podcast's feed did not return valid RSS/XML.".to_string())?;
     let channel = document
         .descendants()
         .find(|node| node.has_tag_name("channel"))

@@ -49,6 +49,10 @@ pub fn window_content() -> gtk::Widget {
     let main_header = adw::HeaderBar::new();
     main_header.add_css_class("shell-header");
     main_header.set_show_start_title_buttons(false);
+    let page_back = gtk::Button::from_icon_name("go-previous-symbolic");
+    page_back.set_tooltip_text(Some("Back to Discover"));
+    page_back.set_visible(false);
+    main_header.pack_start(&page_back);
     let show_sidebar = gtk::Button::from_icon_name("go-previous-symbolic");
     show_sidebar.set_tooltip_text(Some("Show navigation"));
     show_sidebar.set_visible(false);
@@ -59,13 +63,17 @@ pub fn window_content() -> gtk::Widget {
     let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     title_box.set_halign(gtk::Align::Center);
     let spinner = gtk::Spinner::new();
-    spinner.set_visible(false);
+    spinner.set_size_request(20, 20);
+    spinner.set_opacity(0.0);
     title_box.append(&spinner);
     let title = gtk::Label::new(Some("Discover"));
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.set_max_width_chars(34);
     title.add_css_class("heading");
     title_box.append(&title);
+    let title_balance = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    title_balance.set_size_request(20, 20);
+    title_box.append(&title_balance);
     main_header.set_title_widget(Some(&title_box));
     main.append(&main_header);
 
@@ -93,8 +101,6 @@ pub fn window_content() -> gtk::Widget {
         if button.is_active() {
             split_for_search.set_show_content(true);
             search_entry.grab_focus();
-        } else {
-            search_entry.set_text("");
         }
     });
 
@@ -103,9 +109,13 @@ pub fn window_content() -> gtk::Widget {
     let pages_for_search = pages.clone();
     let navigation_for_search = navigation.clone();
     let discover_for_search = discover_row.clone();
-    entry.connect_activate(move |_| {
-        pages_for_search.set_visible_child_name("discover");
-        navigation_for_search.select_row(Some(&discover_for_search));
+    let search_for_submit = search_button.clone();
+    entry.connect_activate(move |entry| {
+        if !entry.text().trim().is_empty() {
+            pages_for_search.set_visible_child_name("discover");
+            navigation_for_search.select_row(Some(&discover_for_search));
+            search_for_submit.set_active(false);
+        }
     });
 
     let title_for_status = title.clone();
@@ -116,14 +126,15 @@ pub fn window_content() -> gtk::Widget {
             return;
         }
         title_for_status.set_text(name);
-        spinner_for_status.set_visible(loading);
         if loading {
             spinner_for_status.start();
+            spinner_for_status.set_opacity(1.0);
         } else {
             spinner_for_status.stop();
+            spinner_for_status.set_opacity(0.0);
         }
     });
-    let discovery = discovery::page(&entry, status);
+    let discovery = discovery::page(&entry, &page_back, status);
     pages.add_named(&discovery.widget, Some("discover"));
     pages.add_named(&empty_state("Your followed podcasts will appear here.", "starred-symbolic"), Some("following"));
     pages.add_named(&empty_state("New episodes from your shows will appear here.", "media-playlist-repeat-symbolic"), Some("new-episodes"));
@@ -137,6 +148,7 @@ pub fn window_content() -> gtk::Widget {
     let split_for_navigation = split.clone();
     let reset_discovery = discovery.reset.clone();
     let search_for_navigation = search_button.clone();
+    let back_for_navigation = page_back.clone();
     navigation.connect_row_activated(move |list, row| {
         list.select_row(Some(row));
         match row.index() {
@@ -148,24 +160,32 @@ pub fn window_content() -> gtk::Widget {
             1 => {
                 pages_for_navigation.set_visible_child_name("following");
                 search_for_navigation.set_active(false);
+                back_for_navigation.set_visible(false);
                 title_for_navigation.set_text("Following");
             }
             _ => {
                 pages_for_navigation.set_visible_child_name("new-episodes");
                 search_for_navigation.set_active(false);
+                back_for_navigation.set_visible(false);
                 title_for_navigation.set_text("New Episodes");
             }
         }
         spinner_for_navigation.stop();
-        spinner_for_navigation.set_visible(false);
+        spinner_for_navigation.set_opacity(0.0);
         split_for_navigation.set_show_content(true);
     });
 
     let sidebar_header_for_breakpoint = sidebar_header.clone();
     let show_sidebar_for_breakpoint = show_sidebar.clone();
+    let back_for_breakpoint = page_back.clone();
     split.connect_collapsed_notify(move |split| {
         sidebar_header_for_breakpoint.set_show_end_title_buttons(split.is_collapsed());
-        show_sidebar_for_breakpoint.set_visible(split.is_collapsed());
+        show_sidebar_for_breakpoint.set_visible(split.is_collapsed() && !back_for_breakpoint.is_visible());
+    });
+    let show_sidebar_for_back = show_sidebar.clone();
+    let split_for_back_visibility = split.clone();
+    page_back.connect_visible_notify(move |back| {
+        show_sidebar_for_back.set_visible(split_for_back_visibility.is_collapsed() && !back.is_visible());
     });
 
     let adaptive = adw::BreakpointBin::new();
