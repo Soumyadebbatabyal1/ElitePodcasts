@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -9,10 +10,17 @@ use crate::following::FollowingStore;
 
 #[derive(Clone)]
 pub struct PlayingEpisode {
+    pub show: Show,
     pub show_title: String,
     pub feed_url: String,
     pub episode: Episode,
     pub artwork_urls: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct QueuedEpisode {
+    pub show: Show,
+    pub episode: Episode,
 }
 
 pub struct PlaybackController {
@@ -20,7 +28,10 @@ pub struct PlaybackController {
     bus: gst::Bus,
     store: Rc<FollowingStore>,
     current: RefCell<Option<PlayingEpisode>>,
+    queue: RefCell<VecDeque<QueuedEpisode>>,
+    library_revision: Cell<u64>,
     playing: Cell<bool>,
+    finished: Cell<bool>,
     position: Cell<u64>,
     duration: Cell<u64>,
     pending_resume: Cell<u64>,
@@ -45,7 +56,10 @@ impl PlaybackController {
             bus,
             store,
             current: RefCell::new(None),
+            queue: RefCell::new(VecDeque::new()),
+            library_revision: Cell::new(0),
             playing: Cell::new(false),
+            finished: Cell::new(false),
             position: Cell::new(0),
             duration: Cell::new(0),
             pending_resume: Cell::new(0),
@@ -70,6 +84,58 @@ impl PlaybackController {
         self.current.borrow().clone()
     }
 
+    pub fn queue(&self) -> Vec<QueuedEpisode> {
+        self.queue.borrow().iter().cloned().collect()
+    }
+
+    pub fn library_revision(&self) -> u64 {
+        self.library_revision.get()
+    }
+
+    pub fn enqueue(&self, show: &Show, episode: &Episode) -> Result<(), String> {
+        if episode.audio_url.is_none() {
+            return Err("This episode has no audio source".to_string());
+        }
+        self.queue.borrow_mut().push_back(QueuedEpisode {
+            show: show.clone(), episode: episode.clone(),
+        });
+        self.library_changed();
+        Ok(())
+    }
+
+    pub fn remove_queued(&self, index: usize) {
+        let removed = self.queue.borrow_mut().remove(index).is_some();
+        if removed {
+            self.library_changed();
+        }
+    }
+
+    pub fn play_queued(&self, index: usize) -> Result<(), String> {
+        let item = self.queue.borrow().get(index).cloned()
+            .ok_or("This episode is no longer in the queue")?;
+        self.play_episode(&item.show, &item.episode)?;
+        self.remove_queued(index);
+        Ok(())
+    }
+
+    pub fn clear_queue(&self) {
+        let had_items = !self.queue.borrow().is_empty();
+        if had_items {
+            self.queue.borrow_mut().clear();
+            self.library_changed();
+        }
+    }
+
+    pub fn history(&self) -> Result<Vec<crate::following::HistoryEntry>, String> {
+        self.store.history()
+    }
+
+    pub fn clear_history(&self) -> Result<(), String> {
+        self.store.clear_history()?;
+        self.library_changed();
+        Ok(())
+    }
+
     pub fn is_playing(&self) -> bool {
         self.playing.get()
     }
@@ -78,6 +144,10 @@ impl PlaybackController {
         self.current.borrow().as_ref().is_some_and(|item| {
             item.feed_url == feed_url && item.episode.id == episode_id
         })
+    }
+
+    pub fn is_current_active(&self, feed_url: &str, episode_id: &str) -> bool {
+        self.is_current(feed_url, episode_id) && !self.finished.get()
     }
 
     pub fn play_or_toggle(&self, show: &Show, episode: &Episode) -> Result<(), String> {
@@ -125,6 +195,7 @@ impl PlaybackController {
             saved
         };
         *self.current.borrow_mut() = Some(PlayingEpisode {
+            show: show.clone(),
             show_title: show.title.clone(),
             feed_url: show.feed_url.clone(),
             episode: episode.clone(),
@@ -136,12 +207,14 @@ impl PlaybackController {
         self.rate.set(1.0);
         if let Err(error) = self.player.set_state(gst::State::Playing) {
             *self.current.borrow_mut() = None;
+            self.finished.set(true);
             self.pending_resume.set(0);
             let _ = self.player.set_state(gst::State::Null);
             self.notify();
             return Err(format!("Could not start this episode: {error}"));
         }
         self.playing.set(true);
+        self.finished.set(false);
         self.notify();
         Ok(())
     }
@@ -149,6 +222,10 @@ impl PlaybackController {
     pub fn toggle(&self) -> Result<(), String> {
         if self.current.borrow().is_none() {
             return Ok(());
+        }
+        if self.finished.get() {
+            let item = self.current.borrow().clone().expect("current episode checked above");
+            return self.play_episode(&item.show, &item.episode);
         }
         if self.playing.get() {
             self.player
@@ -213,6 +290,7 @@ impl PlaybackController {
             match message.view() {
                 gst::MessageView::Error(error) => {
                     self.playing.set(false);
+                    self.finished.set(true);
                     self.save_position();
                     let _ = self.player.set_state(gst::State::Null);
                     (self.toast)(&format!("Playback failed: {}", error.error()));
@@ -220,12 +298,20 @@ impl PlaybackController {
                 gst::MessageView::Eos(_) => {
                     ended = true;
                     self.playing.set(false);
+                    self.finished.set(true);
                     self.position.set(0);
                     self.pending_resume.set(0);
                     let _ = self.player.set_state(gst::State::Ready);
                     if let Some(item) = self.current.borrow().as_ref() {
                         let _ = self.store.save_playback_position(&item.feed_url, &item.episode.id, 0);
-                        let _ = self.store.mark_played(&item.feed_url, &[item.episode.id.clone()]);
+                        if let Err(error) = self.store.mark_played(&item.feed_url, &[item.episode.id.clone()]) {
+                            (self.toast)(&error);
+                        }
+                        if let Err(error) = self.store.record_completed(&item.show, &item.episode) {
+                            (self.toast)(&error);
+                        } else {
+                            self.library_changed();
+                        }
                     }
                 }
                 _ => {}
@@ -235,7 +321,15 @@ impl PlaybackController {
             return;
         }
         if ended {
-            self.notify();
+            let next = self.queue.borrow_mut().pop_front();
+            if let Some(next) = next {
+                self.library_changed();
+                if let Err(error) = self.play_episode(&next.show, &next.episode) {
+                    (self.toast)(&error);
+                }
+            } else {
+                self.notify();
+            }
             return;
         }
         if let Some(duration) = self.player.query_duration::<gst::ClockTime>() {
@@ -283,6 +377,11 @@ impl PlaybackController {
 
     fn notify(&self) {
         self.listeners.borrow_mut().retain(|listener| listener());
+    }
+
+    fn library_changed(&self) {
+        self.library_revision.set(self.library_revision.get().wrapping_add(1));
+        self.notify();
     }
 }
 

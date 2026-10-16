@@ -4,19 +4,27 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use crate::cache;
 use crate::discovery_service::USER_AGENT;
 
 const MAX_IMAGE_BYTES: u64 = 3 * 1024 * 1024;
 const MAX_CACHED_IMAGES: usize = 128;
-const BATCH_WAIT: Duration = Duration::from_secs(15);
+
+struct ArtworkBinding {
+    picture: gtk::glib::WeakRef<gtk::Picture>,
+    candidates: Vec<String>,
+    size: i32,
+    displayed_url: Option<String>,
+}
 
 pub struct ArtworkLoader {
     jobs: mpsc::Sender<String>,
     pending: RefCell<HashSet<String>>,
     cache: RefCell<HashMap<String, gtk::gdk_pixbuf::Pixbuf>>,
     failed: RefCell<HashSet<String>>,
+    bindings: RefCell<Vec<ArtworkBinding>>,
 }
 
 impl ArtworkLoader {
@@ -43,13 +51,16 @@ impl ArtworkLoader {
             pending: RefCell::new(HashSet::new()),
             cache: RefCell::new(HashMap::new()),
             failed: RefCell::new(HashSet::new()),
+            bindings: RefCell::new(Vec::new()),
         });
         let weak = Rc::downgrade(&loader);
         gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
             let Some(loader) = weak.upgrade() else {
                 return gtk::glib::ControlFlow::Break;
             };
-            while let Ok((url, bytes)) = done_rx.try_recv() {
+            let mut changed = false;
+            for _ in 0..4 {
+                let Ok((url, bytes)) = done_rx.try_recv() else { break };
                 loader.pending.borrow_mut().remove(&url);
                 if let Some(pixbuf) = bytes.and_then(|bytes| decode(&bytes)) {
                     let mut cache = loader.cache.borrow_mut();
@@ -62,6 +73,10 @@ impl ArtworkLoader {
                 } else {
                     loader.failed.borrow_mut().insert(url);
                 }
+                changed = true;
+            }
+            if changed {
+                loader.refresh_bindings();
             }
             gtk::glib::ControlFlow::Continue
         });
@@ -69,48 +84,24 @@ impl ArtworkLoader {
     }
 
     pub fn cached_widget(&self, candidates: &[String], size: i32) -> gtk::Widget {
-        let cache = self.cache.borrow();
-        let selected = candidates
-            .iter()
-            .filter_map(|url| {
-                cache.get(url)
-                    .map(|pixbuf| (url, pixbuf.width() * pixbuf.height()))
-            })
-            .max_by_key(|(_, pixels)| *pixels)
-            .map(|(url, _)| url);
-        self.make_widget(selected.map(String::as_str), size)
-    }
-
-    pub fn preload(self: &Rc<Self>, groups: Vec<Vec<String>>, ready: impl FnOnce() + 'static) {
-        for candidates in &groups {
+        let (widget, picture) = self.make_widget(size);
+        let mut displayed_url = None;
+        if let Some((url, pixbuf)) = self.best_pixbuf(candidates) {
+            set_picture_pixbuf(&picture, &pixbuf, size);
+            displayed_url = Some(url);
+        } else {
             self.advance(candidates);
         }
-        let loader = self.clone();
-        let started = Instant::now();
-        let mut ready = Some(ready);
-        gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
-            if started.elapsed() >= BATCH_WAIT {
-                if let Some(ready) = ready.take() {
-                    ready();
-                }
-                return gtk::glib::ControlFlow::Break;
-            }
-            let finished = groups
-                .iter()
-                .map(|candidates| loader.advance(candidates))
-                .fold(true, |all_ready, ready| all_ready && ready);
-            if finished {
-                if let Some(ready) = ready.take() {
-                    ready();
-                }
-                gtk::glib::ControlFlow::Break
-            } else {
-                gtk::glib::ControlFlow::Continue
-            }
+        self.bindings.borrow_mut().push(ArtworkBinding {
+            picture: picture.downgrade(),
+            candidates: candidates.to_vec(),
+            size,
+            displayed_url,
         });
+        widget
     }
 
-    fn make_widget(&self, url: Option<&str>, size: i32) -> gtk::Widget {
+    fn make_widget(&self, size: i32) -> (gtk::Widget, gtk::Picture) {
         let overlay = gtk::Overlay::new();
         overlay.set_size_request(size, size);
         overlay.set_overflow(gtk::Overflow::Hidden);
@@ -118,7 +109,7 @@ impl ArtworkLoader {
         let background = gtk::Box::new(gtk::Orientation::Vertical, 0);
         background.add_css_class("artwork-placeholder");
         overlay.set_child(Some(&background));
-        let icon = gtk::Image::from_icon_name("audio-x-generic-symbolic");
+        let icon = gtk::Image::from_icon_name("image-x-generic-symbolic");
         icon.set_pixel_size(size / 2);
         icon.set_halign(gtk::Align::Center);
         icon.set_valign(gtk::Align::Center);
@@ -129,15 +120,31 @@ impl ArtworkLoader {
         picture.set_can_shrink(true);
         picture.set_size_request(size, size);
         overlay.add_overlay(&picture);
-        if let Some(url) = url {
-            if let Some(pixbuf) = self.cache.borrow().get(url).cloned() {
-                set_picture_pixbuf(&picture, &pixbuf, size);
-                picture.connect_scale_factor_notify(move |picture| {
-                    set_picture_pixbuf(picture, &pixbuf, size);
-                });
+        (overlay.upcast(), picture)
+    }
+
+    fn best_pixbuf(&self, candidates: &[String]) -> Option<(String, gtk::gdk_pixbuf::Pixbuf)> {
+        let cache = self.cache.borrow();
+        candidates.iter()
+            .filter_map(|url| cache.get(url).map(|pixbuf| (url, pixbuf)))
+            .max_by_key(|(_, pixbuf)| pixbuf.width() * pixbuf.height())
+            .map(|(url, pixbuf)| (url.clone(), pixbuf.clone()))
+    }
+
+    fn refresh_bindings(&self) {
+        self.bindings.borrow_mut().retain(|binding| binding.picture.upgrade().is_some());
+        for binding in self.bindings.borrow_mut().iter_mut() {
+            if let Some(picture) = binding.picture.upgrade() {
+                if let Some((url, pixbuf)) = self.best_pixbuf(&binding.candidates) {
+                    if binding.displayed_url.as_deref() != Some(&url) {
+                        set_picture_pixbuf(&picture, &pixbuf, binding.size);
+                        binding.displayed_url = Some(url);
+                    }
+                } else {
+                    self.advance(&binding.candidates);
+                }
             }
         }
-        overlay.upcast()
     }
 
     fn valid_url(url: &str) -> bool {
@@ -178,6 +185,11 @@ impl ArtworkLoader {
 }
 
 fn fetch(url: &str) -> Option<Vec<u8>> {
+    if let Some(bytes) = cache::read_bytes("artwork-v1", url, None) {
+        if !bytes.is_empty() && bytes.len() as u64 <= MAX_IMAGE_BYTES {
+            return Some(bytes);
+        }
+    }
     let response = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(5))
         .user_agent(USER_AGENT)
@@ -194,6 +206,7 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
         None
     } else {
+        cache::write_bytes("artwork-v1", url, &bytes);
         Some(bytes)
     }
 }

@@ -1,6 +1,6 @@
 # Elite Podcasts
 
-Elite Podcasts is a native GTK4 and libadwaita podcast application for GNOME. Search combines live fyyd and Apple Podcasts results, and selecting a result shows recent episodes from its public RSS feed. The window uses a Settings-style sidebar, a current-page title, and a loading spinner beside that title. It opens at 960×680 and has a 700×520 minimum size. Following and playback positions are saved locally in SQLite. Audio playback uses GStreamer.
+Elite Podcasts is a native GTK4 and libadwaita podcast application for GNOME. Search uses Apple's public podcast directory, category browsing uses its podcast charts, and selecting a result shows recent episodes from its public RSS feed. The window uses a Settings-style sidebar, a current-page title, and a loading spinner beside that title. It opens at 960×680 and has a 700×520 minimum size. Following and playback positions are saved locally in SQLite. Audio playback uses GStreamer.
 
 ## Requirements
 
@@ -20,32 +20,29 @@ cargo run
 
 Cargo downloads the Rust crates on the first build. Close any older Elite Podcasts window before launching a newly built version; the application ID allows only one running instance.
 
-Select the search button, type a podcast name, and press Enter. Search combines fyyd's public directory with Apple's documented podcast search; neither needs a key. If one directory fails, the other's results still appear. Category tiles load Podcast Index trending feeds with API credentials, except Climate, which uses a public text search. Network requests run in worker threads so the window remains responsive.
+Select the search button, type a podcast name, and press Enter. Search uses Apple's public podcast directory and needs no API key. Category tiles show podcasts from Apple's US category charts; the Climate tile uses the Earth Sciences chart. Chart entries are looked up in the directory to obtain public RSS URLs, so shows without one are omitted. Search and category results are cached for 30 minutes, with saved results used if the service is unavailable. Network requests run in worker threads.
 
 Search and category results use native Adwaita boxed lists with artwork, show and publisher names, and an available date above the title. Dates use the local day: Today, Yesterday, day and month, or a year when needed. Exact title matches appear first. A search briefly outlines its first result in the accent color. Select a row to see a podcast cover, description, and up to 20 recent episodes from its public RSS feed. Use Add to follow a show; the button becomes green and says Added. The Following page displays a responsive cover grid, and its covers open the podcast page. The podcast page shortens long descriptions with an inline More link that opens a native dialog. Beneath it, the headphones button and podcast menu can mark the loaded episodes as played, and the circled tick unsubscribes. The podcast menu can also open the show's website.
 
 Each episode row has artwork, date, title, a short description, and a play button on the right. Select the row to read the full episode description in a native dialog. The row's play button and the podcast page's Latest episode button stream audio from the RSS enclosure. A player bar spans the bottom of the window with play/pause, 10-second skips, seeking, time, and speeds from 0.75× to 2×. It stays visible across pages and hides artwork and titles at narrow widths. Playback positions are saved periodically, when pausing or switching episodes, and when closing the app; reopening an episode resumes near that position. Completing an episode marks it as played. Audio streaming requires a working network connection and a codec supported by the installed GStreamer plugins.
 
+Right-click an episode row to Play Now or Queue Up. The menu stays closed for the current episode while it is playing or paused. New Episodes rows also offer Go to Show. Direct playback leaves the queue in place; after the current episode finishes, queued episodes play in order. The queue stays in memory and clears when the app closes. The sidebar button beside playback speed opens a native sliding Queue and History panel; a header button opens it when no episode is playing. The panel slides over the player. Completed episodes are saved to SQLite History until Clear History is used. Both tabs use native lists and provide controls to play entries again or remove queued entries.
+
+New Episodes reads the latest 20 entries from each followed RSS feed only when you choose Check for New Episodes from its page menu or press Ctrl+R. Navigating away and back keeps the current list without fetching feeds again; reopening the app loads the saved list in a worker. A manual refresh keeps existing rows visible and adds results as individual feeds finish, so a slow feed does not hold up faster ones. It shows playable, unplayed episodes in local-date groups: Today, Yesterday, This week, This month, and Older. Rows use the same artwork, date, title, description, and play/pause button as the podcast page. Select a row for the same episode details dialog used on podcast pages. The page menu can open Keyboard Shortcuts with Ctrl+? and show About Elite Podcasts. Import Shows and Export Shows are disabled until those features are implemented. Checking again removes episodes that have since been played. Feeds that fail to load do not prevent other followed shows from appearing.
+
 The 10-second skip and speedometer symbolic icons in `assets/icons/` come from [GNOME Audio Player (Decibels)](https://gitlab.gnome.org/GNOME/decibels), licensed under GPL-3.0. They are bundled as application resources so GTK can recolor them with the active theme.
 
-Images are loaded by four background workers, with alternate artwork URLs tried only when the preferred one fails. Images stay in a bounded in-memory cache and use a symbolic placeholder when unavailable. The list appears after its artwork batch finishes or reaches the 15-second limit. The cache is cleared when the app exits. RSS feeds are limited to 32 MB; larger feeds show an explicit size error.
+Images are loaded by four background workers, with alternate artwork URLs tried only when the preferred one fails. Text and controls appear without waiting for artwork. Images use a bounded in-memory cache and a persistent disk cache under the standard user cache directory, with a symbolic placeholder while loading or when unavailable. RSS feed data is also cached: fresh cached feeds load immediately for 15 minutes, and older cached feeds load immediately while a background refresh updates the cache. RSS feeds are limited to 32 MB; larger feeds show an explicit size error.
 
-To enable category browsing, obtain your own Podcast Index API key and secret and launch the app with these environment variables set:
-
-```sh
-export PODCAST_INDEX_KEY='your-key'
-export PODCAST_INDEX_SECRET='your-secret'
-cargo run
-```
-
-Keep credentials out of the repository. If either value is missing, the category page explains what is needed. Podcast Index credentials have not been used to verify category responses yet.
+Search and category browsing need an internet connection on their first request. No API credentials are required.
 
 ## Project layout
 
 - `src/app.rs` starts the libadwaita application and creates its window.
-- `src/ui/` contains the adaptive sidebar, page header, discovery views, nine-category grid, and artwork loader.
+- `src/ui/` contains the adaptive sidebar, page header, discovery views, New Episodes page, shared episode rows and dialog, Queue and History panel, nine-category grid, and artwork loader.
 - `src/data.rs` defines the category tiles.
-- `src/discovery_service.rs` combines fyyd and Apple Podcasts search, handles authenticated Podcast Index category requests, and reads public RSS feeds.
+- `src/discovery_service.rs` searches Apple's public podcast directory, loads category charts, and reads public RSS feeds.
+- `src/cache.rs` stores fetched directory responses, RSS details, the New Episodes snapshot, and artwork in the user cache directory.
 - `src/following.rs` saves followed podcasts in SQLite under the standard user data directory.
 - `src/playback.rs` manages GStreamer streaming and saved resume positions; `src/ui/player.rs` builds the adaptive player bar.
 - `assets/artwork/` retains original local SVG placeholder art for a possible future feature; the carousel is currently hidden.
@@ -53,7 +50,7 @@ Keep credentials out of the repository. If either value is missing, the category
 
 ## Technology choices
 
-The app uses GTK4 through gtk4-rs 0.9, libadwaita through libadwaita-rs 0.7, and GStreamer through gstreamer-rs 0.23. The discovery client uses ureq 2.12, serde, and SHA-1 for authenticated Podcast Index category requests. RSS is parsed with roxmltree. Following and resume positions use rusqlite with bundled SQLite, so no system SQLite development package is needed. GSettings, MPRIS, downloads, and a playback queue remain future work.
+The app uses GTK4 through gtk4-rs 0.9, libadwaita through libadwaita-rs 0.7, and GStreamer through gstreamer-rs 0.23. The discovery client uses ureq 2.12 and serde; SHA-1 is used for cache file names. RSS is parsed with roxmltree. Following and resume positions use rusqlite with bundled SQLite, so no system SQLite development package is needed. GSettings, MPRIS, and downloads remain future work.
 
 The proposed application ID `io.github.elite.Podcasts` is temporary. Confirm a final reverse-DNS ID before packaging or publishing.
 

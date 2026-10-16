@@ -17,9 +17,9 @@ pub fn run() {
             .title("Elite Podcasts")
             .default_width(960)
             .default_height(680)
-            .content(&crate::ui::window_content())
             .build();
         window.set_size_request(700, 520);
+        window.set_content(Some(&crate::ui::window_content(&window, app)));
         window.present();
     });
     app.run();

@@ -1,4 +1,5 @@
 mod app;
+mod cache;
 mod data;
 mod discovery_service;
 mod following;

@@ -1,5 +1,4 @@
 use adw::prelude::*;
-use std::cell::Cell;
 use std::rc::Rc;
 
 use super::artwork::ArtworkLoader;
@@ -25,15 +24,12 @@ pub(super) fn page(
     clamp.set_child(Some(&content));
     scroller.set_child(Some(&clamp));
 
-    let generation = Rc::new(Cell::new(0u64));
     let store_for_render = Rc::downgrade(&store);
     let content_for_render = content.downgrade();
     let render: Rc<dyn Fn()> = Rc::new(move || {
         let Some(content) = content_for_render.upgrade() else {
             return;
         };
-        let id = generation.get().wrapping_add(1);
-        generation.set(id);
         while let Some(child) = content.first_child() {
             content.remove(&child);
         }
@@ -59,38 +55,28 @@ pub(super) fn page(
             content.append(&empty);
             return;
         }
-        let groups = shows.iter().map(|show| show.artwork_urls.clone()).collect();
-        let content = content.clone();
-        let artwork_for_grid = artwork.clone();
-        let open_show = open_show.clone();
-        let generation = generation.clone();
-        artwork.preload(groups, move || {
-            if generation.get() != id {
-                return;
-            }
-            let grid = gtk::FlowBox::builder()
-                .selection_mode(gtk::SelectionMode::None)
-                .min_children_per_line(1)
-                .max_children_per_line(8)
-                .column_spacing(8)
-                .row_spacing(8)
-                .homogeneous(true)
-                .halign(gtk::Align::Start)
-                .hexpand(true)
-                .build();
-            for show in shows {
-                let tile = gtk::Button::new();
-                tile.add_css_class("flat");
-                tile.add_css_class("following-cover");
-                tile.set_halign(gtk::Align::Center);
-                tile.set_tooltip_text(Some(&show.title));
-                tile.set_child(Some(&artwork_for_grid.cached_widget(&show.artwork_urls, 140)));
-                let open_show = open_show.clone();
-                tile.connect_clicked(move |_| open_show(show.clone()));
-                grid.insert(&tile, -1);
-            }
-            content.append(&grid);
-        });
+        let grid = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .min_children_per_line(1)
+            .max_children_per_line(8)
+            .column_spacing(8)
+            .row_spacing(8)
+            .homogeneous(true)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .build();
+        for show in shows {
+            let tile = gtk::Button::new();
+            tile.add_css_class("flat");
+            tile.add_css_class("following-cover");
+            tile.set_halign(gtk::Align::Center);
+            tile.set_tooltip_text(Some(&show.title));
+            tile.set_child(Some(&artwork.cached_widget(&show.artwork_urls, 140)));
+            let open_show = open_show.clone();
+            tile.connect_clicked(move |_| open_show(show.clone()));
+            grid.insert(&tile, -1);
+        }
+        content.append(&grid);
     });
     render();
     let weak = content.downgrade();

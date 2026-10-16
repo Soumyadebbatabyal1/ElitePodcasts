@@ -1,9 +1,16 @@
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 
-use crate::discovery_service::Show;
+use crate::discovery_service::{Episode, Show};
+
+pub struct HistoryEntry {
+    pub show: Show,
+    pub episode: Episode,
+    pub completed_at: i64,
+}
 
 pub struct FollowingStore {
     connection: Connection,
@@ -11,6 +18,31 @@ pub struct FollowingStore {
 }
 
 impl FollowingStore {
+    /// Read the episode-list filters on a worker without moving the UI's SQLite connection.
+    pub fn episode_filters() -> Result<(HashSet<String>, HashMap<String, HashSet<String>>), String> {
+        let path = gtk::glib::user_data_dir().join("elite-podcasts/podcasts.sqlite3");
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("Could not read followed podcasts: {error}"))?;
+        let mut statement = connection.prepare(
+            "SELECT following.feed_url, played_episodes.episode_id
+             FROM following LEFT JOIN played_episodes
+             ON following.feed_url = played_episodes.feed_url",
+        ).map_err(|error| format!("Could not read episode filters: {error}"))?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        }).map_err(|error| format!("Could not read episode filters: {error}"))?;
+        let mut followed = HashSet::new();
+        let mut played: HashMap<String, HashSet<String>> = HashMap::new();
+        for row in rows {
+            let (feed_url, episode_id) = row.map_err(|error| error.to_string())?;
+            followed.insert(feed_url.clone());
+            if let Some(episode_id) = episode_id {
+                played.entry(feed_url).or_default().insert(episode_id);
+            }
+        }
+        Ok((followed, played))
+    }
+
     pub fn open() -> Result<Rc<Self>, String> {
         let directory = gtk::glib::user_data_dir().join("elite-podcasts");
         std::fs::create_dir_all(&directory)
@@ -39,6 +71,12 @@ impl FollowingStore {
                 position_seconds INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
                 PRIMARY KEY (feed_url, episode_id)
+            );
+            CREATE TABLE IF NOT EXISTS completed_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                show_json TEXT NOT NULL,
+                episode_json TEXT NOT NULL,
+                completed_at INTEGER NOT NULL DEFAULT (unixepoch())
             );",
             )
             .map_err(|error| format!("Could not prepare the podcast database: {error}"))?;
@@ -134,7 +172,21 @@ impl FollowingStore {
         transaction
             .commit()
             .map_err(|error| format!("Could not save played episodes: {error}"))?;
+        if added > 0 {
+            self.notify();
+        }
         Ok(added)
+    }
+
+    pub fn played_ids(&self, feed_url: &str) -> Result<HashSet<String>, String> {
+        let mut statement = self.connection
+            .prepare("SELECT episode_id FROM played_episodes WHERE feed_url = ?1")
+            .map_err(|error| format!("Could not read played episodes: {error}"))?;
+        let rows = statement
+            .query_map([feed_url], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not read played episodes: {error}"))?;
+        rows.collect::<Result<HashSet<_>, _>>()
+            .map_err(|error| format!("Could not read played episodes: {error}"))
     }
 
     pub fn playback_position(&self, feed_url: &str, episode_id: &str) -> u64 {
@@ -164,6 +216,41 @@ impl FollowingStore {
                 params![feed_url, episode_id, seconds.min(i64::MAX as u64) as i64],
             )
             .map_err(|error| format!("Could not save playback position: {error}"))?;
+        Ok(())
+    }
+
+    pub fn record_completed(&self, show: &Show, episode: &Episode) -> Result<(), String> {
+        let show_json = serde_json::to_string(show).map_err(|error| error.to_string())?;
+        let episode_json = serde_json::to_string(episode).map_err(|error| error.to_string())?;
+        self.connection.execute(
+            "INSERT INTO completed_history (show_json, episode_json) VALUES (?1, ?2)",
+            params![show_json, episode_json],
+        ).map_err(|error| format!("Could not save playback history: {error}"))?;
+        Ok(())
+    }
+
+    pub fn history(&self) -> Result<Vec<HistoryEntry>, String> {
+        let mut statement = self.connection.prepare(
+            "SELECT show_json, episode_json, completed_at FROM completed_history ORDER BY id DESC"
+        ).map_err(|error| format!("Could not read playback history: {error}"))?;
+        let rows = statement.query_map([], |row| {
+            let show_json: String = row.get(0)?;
+            let episode_json: String = row.get(1)?;
+            Ok((show_json, episode_json, row.get::<_, i64>(2)?))
+        }).map_err(|error| format!("Could not read playback history: {error}"))?;
+        rows.map(|row| {
+            let (show_json, episode_json, completed_at) = row.map_err(|error| error.to_string())?;
+            Ok(HistoryEntry {
+                show: serde_json::from_str(&show_json).map_err(|error| error.to_string())?,
+                episode: serde_json::from_str(&episode_json).map_err(|error| error.to_string())?,
+                completed_at,
+            })
+        }).collect()
+    }
+
+    pub fn clear_history(&self) -> Result<(), String> {
+        self.connection.execute("DELETE FROM completed_history", [])
+            .map_err(|error| format!("Could not clear playback history: {error}"))?;
         Ok(())
     }
 

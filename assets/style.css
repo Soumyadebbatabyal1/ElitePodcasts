@@ -141,7 +141,7 @@ label link.more-link {
 
 .player-speed-button > button {
   min-height: 0;
-  padding: 4px 9px;
+  padding: 2px 5px;
   border: none;
   border-radius: 999px;
   background: transparent;
@@ -161,6 +161,26 @@ label link.more-link {
 
 .player-episode-title {
   font-weight: 700;
+}
+
+.player-time {
+  font-feature-settings: "tnum" 1;
+}
+
+.episode-secondary-text {
+  font-size: 0.85em;
+}
+
+.player-surface {
+  background-color: @window_bg_color;
+}
+
+.library-icon-action,
+.library-icon-action:hover {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 999px;
 }
 
 .episode-play-button {

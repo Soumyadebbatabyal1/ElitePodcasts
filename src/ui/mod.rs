@@ -1,6 +1,10 @@
 mod artwork;
 mod discovery;
+mod episode;
+mod episode_row;
 mod following;
+mod library_panel;
+mod new_episodes;
 mod player;
 
 use adw::prelude::*;
@@ -10,7 +14,7 @@ use crate::following::FollowingStore;
 use artwork::ArtworkLoader;
 use crate::playback::PlaybackController;
 
-pub fn window_content() -> gtk::Widget {
+pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -> gtk::Widget {
     install_styles();
     let store = match FollowingStore::open() {
         Ok(store) => store,
@@ -44,6 +48,12 @@ pub fn window_content() -> gtk::Widget {
                 .upcast();
         }
     };
+    let overlay = adw::OverlaySplitView::new();
+    overlay.set_collapsed(true);
+    overlay.set_show_sidebar(false);
+    overlay.set_sidebar_position(gtk::PackType::End);
+    overlay.set_min_sidebar_width(300.0);
+    overlay.set_max_sidebar_width(380.0);
 
     let split = adw::NavigationSplitView::new();
     split.set_min_sidebar_width(200.0);
@@ -101,6 +111,31 @@ pub fn window_content() -> gtk::Widget {
         .tooltip_text("Podcast options")
         .build();
     main_header.pack_end(&podcast_menu);
+    let episodes_menu = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("New Episodes options")
+        .build();
+    episodes_menu.set_visible(false);
+    main_header.pack_end(&episodes_menu);
+    let idle_library = gtk::Button::from_icon_name("sidebar-show-right-symbolic");
+    idle_library.add_css_class("flat");
+    idle_library.set_tooltip_text(Some("Queue and History"));
+    let weak_overlay = overlay.downgrade();
+    idle_library.connect_clicked(move |_| {
+        if let Some(overlay) = weak_overlay.upgrade() {
+            overlay.set_show_sidebar(true);
+        }
+    });
+    let weak_idle_library = idle_library.downgrade();
+    let weak_playback = Rc::downgrade(&playback);
+    playback.watch(move || {
+        let (Some(button), Some(playback)) = (weak_idle_library.upgrade(), weak_playback.upgrade()) else {
+            return false;
+        };
+        button.set_visible(playback.current().is_none());
+        true
+    });
+    main_header.pack_end(&idle_library);
 
     let title_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     title_box.set_halign(gtk::Align::Center);
@@ -170,16 +205,18 @@ pub fn window_content() -> gtk::Widget {
     let row_for_following_back = following_row.clone();
     let title_for_following_back = title.clone();
     let spinner_for_following_back = spinner.clone();
+    let episodes_menu_for_following_back = episodes_menu.clone();
     let back_to_following: Rc<dyn Fn()> = Rc::new(move || {
         pages_for_following_back.set_transition_type(gtk::StackTransitionType::SlideRight);
         pages_for_following_back.set_visible_child_name("following");
+        episodes_menu_for_following_back.set_visible(false);
         navigation_for_following_back.select_row(Some(&row_for_following_back));
         title_for_following_back.set_text("Following");
         spinner_for_following_back.stop();
         spinner_for_following_back.set_opacity(0.0);
     });
     let discovery = discovery::page(
-        &entry, &page_back, &podcast_menu, status, store.clone(), artwork.clone(), playback.clone(), toast.clone(),
+        &entry, &page_back, &podcast_menu, &pages, status, store.clone(), artwork.clone(), playback.clone(), toast.clone(),
         back_to_following,
     );
     pages.add_named(&discovery.widget, Some("discover"));
@@ -195,8 +232,8 @@ pub fn window_content() -> gtk::Widget {
             pages_for_search.set_visible_child_name("discover");
             navigation_for_search.select_row(Some(&discover_for_search));
             title_for_search.set_text("Search results");
-            spinner_for_search.start();
-            spinner_for_search.set_opacity(1.0);
+            spinner_for_search.stop();
+            spinner_for_search.set_opacity(0.0);
             search_for_submit.set_active(false);
         }
     });
@@ -206,17 +243,50 @@ pub fn window_content() -> gtk::Widget {
     let discover_for_open_followed = discover_row.clone();
     let title_for_open_followed = title.clone();
     let spinner_for_open_followed = spinner.clone();
+    let episodes_menu_for_open_followed = episodes_menu.clone();
     let open_from_following: Rc<dyn Fn(crate::discovery_service::Show)> = Rc::new(move |show| {
+        episodes_menu_for_open_followed.set_visible(false);
         open_followed(show.clone());
         pages_for_open_followed.set_transition_type(gtk::StackTransitionType::SlideLeft);
         pages_for_open_followed.set_visible_child_name("discover");
         navigation_for_open_followed.select_row(Some(&discover_for_open_followed));
         title_for_open_followed.set_text(&show.title);
-        spinner_for_open_followed.start();
-        spinner_for_open_followed.set_opacity(1.0);
+        spinner_for_open_followed.stop();
+        spinner_for_open_followed.set_opacity(0.0);
     });
-    pages.add_named(&following::page(store, artwork.clone(), open_from_following), Some("following"));
-    pages.add_named(&empty_state("New episodes from your shows will appear here.", "media-playlist-repeat-symbolic"), Some("new-episodes"));
+    pages.add_named(&following::page(store.clone(), artwork.clone(), open_from_following.clone()), Some("following"));
+    let weak_pages = pages.downgrade();
+    let weak_title = title.downgrade();
+    let weak_spinner = spinner.downgrade();
+    let episodes_busy: Rc<dyn Fn(bool)> = Rc::new(move |loading| {
+        let (Some(pages), Some(title), Some(spinner)) = (
+            weak_pages.upgrade(), weak_title.upgrade(), weak_spinner.upgrade(),
+        ) else {
+            return;
+        };
+        if pages.visible_child_name().as_deref() != Some("new-episodes") {
+            return;
+        }
+        title.set_text("New Episodes");
+        if loading {
+            spinner.start();
+            spinner.set_opacity(1.0);
+        } else {
+            spinner.stop();
+            spinner.set_opacity(0.0);
+        }
+    });
+    let new_page = new_episodes::page(
+        store, artwork.clone(), playback.clone(), toast.clone(), episodes_busy,
+        open_from_following.clone(),
+    );
+    let restore_new_episodes = new_page.restore.clone();
+    pages.add_named(&new_page.widget, Some("new-episodes"));
+    setup_episodes_menu(window, app, &pages, &episodes_menu, new_page.refresh);
+    let episodes_menu_for_page = episodes_menu.clone();
+    pages.connect_visible_child_name_notify(move |pages| {
+        episodes_menu_for_page.set_visible(pages.visible_child_name().as_deref() == Some("new-episodes"));
+    });
     pages.set_visible_child_name("discover");
     main.append(&pages);
     split.set_content(Some(&adw::NavigationPage::new(&main, "Discover")));
@@ -229,6 +299,7 @@ pub fn window_content() -> gtk::Widget {
     let search_for_navigation = search_button.clone();
     let back_for_navigation = page_back.clone();
     let menu_for_navigation = podcast_menu.clone();
+    let episodes_menu_for_navigation = episodes_menu.clone();
     navigation.connect_row_activated(move |list, row| {
         list.select_row(Some(row));
         match row.index() {
@@ -251,10 +322,25 @@ pub fn window_content() -> gtk::Widget {
                 back_for_navigation.set_visible(false);
                 menu_for_navigation.set_visible(false);
                 title_for_navigation.set_text("New Episodes");
+                let pages = pages_for_navigation.clone();
+                let restore = restore_new_episodes.clone();
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(30), move || {
+                    if pages.visible_child_name().as_deref() != Some("new-episodes") {
+                        return gtk::glib::ControlFlow::Break;
+                    }
+                    if pages.is_transition_running() {
+                        return gtk::glib::ControlFlow::Continue;
+                    }
+                    restore();
+                    gtk::glib::ControlFlow::Break
+                });
             }
         }
-        spinner_for_navigation.stop();
-        spinner_for_navigation.set_opacity(0.0);
+        episodes_menu_for_navigation.set_visible(row.index() == 2);
+        if row.index() != 2 {
+            spinner_for_navigation.stop();
+            spinner_for_navigation.set_opacity(0.0);
+        }
         split_for_navigation.set_show_content(true);
     });
 
@@ -284,8 +370,22 @@ pub fn window_content() -> gtk::Widget {
     adaptive.add_breakpoint(compact);
     let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
     layout.append(&adaptive);
-    layout.append(&player::bar(playback, artwork, toast));
-    toast_overlay.set_child(Some(&layout));
+    let weak_overlay = overlay.downgrade();
+    let open_panel: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(overlay) = weak_overlay.upgrade() {
+            overlay.set_show_sidebar(true);
+        }
+    });
+    let weak_overlay = overlay.downgrade();
+    let close_panel: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(overlay) = weak_overlay.upgrade() {
+            overlay.set_show_sidebar(false);
+        }
+    });
+    layout.append(&player::bar(playback.clone(), artwork.clone(), toast.clone(), open_panel));
+    overlay.set_content(Some(&layout));
+    overlay.set_sidebar(Some(&library_panel::panel(playback, artwork, toast, close_panel)));
+    toast_overlay.set_child(Some(&overlay));
     toast_overlay.upcast()
 }
 
@@ -326,6 +426,103 @@ fn menu_button() -> gtk::MenuButton {
     menu
 }
 
+fn setup_episodes_menu(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    pages: &gtk::Stack,
+    menu: &gtk::MenuButton,
+    refresh: Rc<dyn Fn()>,
+) {
+    let refresh_action = gtk::gio::SimpleAction::new("refresh-episodes", None);
+    let weak_pages = pages.downgrade();
+    refresh_action.connect_activate(move |_, _| {
+        if weak_pages.upgrade().is_some_and(|pages| {
+            pages.visible_child_name().as_deref() == Some("new-episodes")
+        }) {
+            refresh();
+        }
+    });
+    window.add_action(&refresh_action);
+    app.set_accels_for_action("win.refresh-episodes", &["<Primary>r"]);
+
+    let shortcuts_action = gtk::gio::SimpleAction::new("show-shortcuts", None);
+    let weak_window = window.downgrade();
+    shortcuts_action.connect_activate(move |_, _| {
+        if let Some(window) = weak_window.upgrade() {
+            show_shortcuts(&window);
+        }
+    });
+    window.add_action(&shortcuts_action);
+    app.set_accels_for_action("win.show-shortcuts", &["<Primary>question"]);
+
+    let about_action = gtk::gio::SimpleAction::new("show-about", None);
+    let weak_window = window.downgrade();
+    about_action.connect_activate(move |_, _| {
+        if let Some(window) = weak_window.upgrade() {
+            adw::AboutDialog::builder()
+                .application_name("Elite Podcasts")
+                .version(env!("CARGO_PKG_VERSION"))
+                .developer_name("Elite Podcasts contributors")
+                .build()
+                .present(Some(&window));
+        }
+    });
+    window.add_action(&about_action);
+
+    for (name, accelerator) in [
+        ("import-shows", "<Primary>o"),
+        ("export-shows", "<Primary>e"),
+    ] {
+        let action = gtk::gio::SimpleAction::new(name, None);
+        action.set_enabled(false);
+        window.add_action(&action);
+        app.set_accels_for_action(&format!("win.{name}"), &[accelerator]);
+    }
+
+    let model = gtk::gio::Menu::new();
+    let feed_actions = gtk::gio::Menu::new();
+    feed_actions.append(Some("Check for New Episodes"), Some("win.refresh-episodes"));
+    feed_actions.append(Some("Import Shows"), Some("win.import-shows"));
+    feed_actions.append(Some("Export Shows"), Some("win.export-shows"));
+    model.append_section(None, &feed_actions);
+    let app_actions = gtk::gio::Menu::new();
+    app_actions.append(Some("Keyboard Shortcuts"), Some("win.show-shortcuts"));
+    app_actions.append(Some("About Elite Podcasts"), Some("win.show-about"));
+    model.append_section(None, &app_actions);
+    menu.set_menu_model(Some(&model));
+}
+
+fn show_shortcuts(window: &adw::ApplicationWindow) {
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.set_margin_top(20);
+    body.set_margin_bottom(24);
+    body.set_margin_start(24);
+    body.set_margin_end(24);
+    for (label, keys) in [
+        ("Check for New Episodes", "<Primary>r"),
+        ("Keyboard Shortcuts", "<Primary>question"),
+    ] {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+        let title = gtk::Label::new(Some(label));
+        title.set_xalign(0.0);
+        title.set_hexpand(true);
+        row.append(&title);
+        let shortcut = gtk::ShortcutLabel::new(keys);
+        row.append(&shortcut);
+        body.append(&row);
+    }
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    toolbar.set_content(Some(&body));
+    adw::Dialog::builder()
+        .title("Keyboard Shortcuts")
+        .content_width(420)
+        .content_height(180)
+        .child(&toolbar)
+        .build()
+        .present(Some(window));
+}
+
 fn install_styles() {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(include_str!("../../assets/style.css"));
@@ -355,14 +552,4 @@ fn install_styles() {
             include_str!("../../assets/accent-light.css")
         });
     });
-}
-
-fn empty_state(message: &str, icon: &str) -> gtk::Widget {
-    adw::StatusPage::builder()
-        .icon_name(icon)
-        .title("Nothing here yet")
-        .description(message)
-        .vexpand(true)
-        .build()
-        .upcast()
 }

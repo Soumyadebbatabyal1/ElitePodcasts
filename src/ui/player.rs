@@ -10,14 +10,15 @@ pub(super) fn bar(
     playback: Rc<PlaybackController>,
     artwork: Rc<ArtworkLoader>,
     toast: Rc<dyn Fn(&str)>,
+    open_panel: Rc<dyn Fn()>,
 ) -> gtk::Widget {
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     bar.add_css_class("player-bar");
-    bar.set_margin_start(12);
-    bar.set_margin_end(12);
-    bar.set_margin_top(10);
-    bar.set_margin_bottom(10);
-    bar.set_size_request(-1, 64);
+    bar.set_margin_start(10);
+    bar.set_margin_end(10);
+    bar.set_margin_top(6);
+    bar.set_margin_bottom(6);
+    bar.set_size_request(-1, 52);
     bar.set_visible(false);
 
     let rewind = gtk::Button::from_icon_name("skip-backwards-10-symbolic");
@@ -66,13 +67,13 @@ pub(super) fn bar(
 
     let cover = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     cover.set_size_request(36, 36);
-    cover.set_margin_start(6);
+    cover.set_margin_start(2);
     cover.set_valign(gtk::Align::Center);
     bar.append(&cover);
 
     let metadata = gtk::Box::new(gtk::Orientation::Vertical, 0);
     metadata.set_valign(gtk::Align::Center);
-    metadata.set_size_request(170, -1);
+    metadata.set_size_request(200, -1);
     let show_title = gtk::Label::new(None);
     show_title.set_xalign(0.0);
     show_title.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -106,17 +107,22 @@ pub(super) fn bar(
     bar.append(&seek);
 
     let time = gtk::Label::new(Some("00:00 / 00:00"));
+    time.set_width_chars(13);
+    time.set_xalign(0.0);
+    time.set_valign(gtk::Align::Center);
     time.add_css_class("caption");
-    time.add_css_class("dim-label");
-    bar.append(&time);
+    time.add_css_class("player-time");
+    let trailing = gtk::Box::new(gtk::Orientation::Horizontal, 1);
+    trailing.set_valign(gtk::Align::Center);
+    trailing.append(&time);
 
     let speed = gtk::MenuButton::new();
     speed.add_css_class("player-speed-button");
     speed.set_valign(gtk::Align::Center);
     speed.set_tooltip_text(Some("Playback speed"));
-    let speed_content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let speed_content = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     let speed_icon = gtk::Image::from_icon_name("speedometer-symbolic");
-    speed_icon.set_pixel_size(12);
+    speed_icon.set_pixel_size(13);
     speed_icon.add_css_class("player-speed-icon");
     speed_content.append(&speed_icon);
     let speed_label = gtk::Label::new(Some("1.00×"));
@@ -148,7 +154,19 @@ pub(super) fn bar(
     speed_popover.set_child(Some(&choices));
     speed.set_popover(Some(&speed_popover));
     speed.set_direction(gtk::ArrowType::Up);
-    bar.append(&speed);
+    trailing.append(&speed);
+
+    let library = gtk::Button::new();
+    library.add_css_class("flat");
+    library.set_tooltip_text(Some("Queue and History"));
+    let library_icon = gtk::Image::from_icon_name("sidebar-show-right-symbolic");
+    library_icon.set_pixel_size(13);
+    library.set_child(Some(&library_icon));
+    library.set_size_request(28, 28);
+    library.set_valign(gtk::Align::Center);
+    library.connect_clicked(move |_| open_panel());
+    trailing.append(&library);
+    bar.append(&trailing);
 
     let current_key = Rc::new(RefCell::new(String::new()));
     let weak_bar = bar.downgrade();
@@ -199,21 +217,24 @@ pub(super) fn bar(
         play.set_tooltip_text(Some(if playback_for_update.is_playing() { "Pause" } else { "Play" }));
         let duration = playback_for_update.duration();
         let position = playback_for_update.position();
+        let show_hours = duration.max(item.episode.duration_seconds.unwrap_or(0)) >= 3600;
+        time.set_width_chars(if show_hours { 19 } else { 13 });
         updating_seek.set(true);
         seek.set_range(0.0, duration.max(1) as f64);
         seek.set_sensitive(duration > 0);
         seek.set_value(position.min(duration.max(1)) as f64);
         updating_seek.set(false);
-        time.set_text(&format!("{} / {}", clock_text(position), clock_text(duration)));
+        time.set_text(&format!("{} / {}", clock_text(position, show_hours), clock_text(duration, show_hours)));
         speed.set_text(&format!("{:.2}×", playback_for_update.rate()));
         true
     });
 
     let compact = adw::BreakpointBin::new();
+    compact.add_css_class("player-surface");
     compact.set_child(Some(&bar));
     let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
         adw::BreakpointConditionLengthType::MaxWidth,
-        800.0,
+        930.0,
         adw::LengthUnit::Sp,
     ));
     narrow.add_setter(&cover, "visible", Some(&false.to_value()));
@@ -222,9 +243,9 @@ pub(super) fn bar(
     compact.upcast()
 }
 
-fn clock_text(seconds: u64) -> String {
-    if seconds >= 3600 {
-        format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
+fn clock_text(seconds: u64, show_hours: bool) -> String {
+    if show_hours {
+        format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
     } else {
         format!("{:02}:{:02}", seconds / 60, seconds % 60)
     }
