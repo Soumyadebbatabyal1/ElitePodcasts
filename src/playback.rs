@@ -34,6 +34,7 @@ pub struct PlaybackController {
     finished: Cell<bool>,
     position: Cell<u64>,
     duration: Cell<u64>,
+    seek_revision: Cell<u64>,
     pending_resume: Cell<u64>,
     rate: Cell<f64>,
     ticks: Cell<u8>,
@@ -62,6 +63,7 @@ impl PlaybackController {
             finished: Cell::new(false),
             position: Cell::new(0),
             duration: Cell::new(0),
+            seek_revision: Cell::new(0),
             pending_resume: Cell::new(0),
             rate: Cell::new(1.0),
             ticks: Cell::new(0),
@@ -140,6 +142,62 @@ impl PlaybackController {
         self.playing.get()
     }
 
+    pub fn can_play(&self) -> bool {
+        self.current.borrow().is_some() || !self.queue.borrow().is_empty()
+    }
+
+    pub fn can_go_next(&self) -> bool {
+        !self.queue.borrow().is_empty()
+    }
+
+    pub fn can_seek(&self) -> bool {
+        self.current.borrow().is_some() && !self.finished.get()
+    }
+
+    pub fn play(&self) -> Result<(), String> {
+        if self.current.borrow().is_none() {
+            return self.play_next();
+        }
+        if !self.playing.get() {
+            self.toggle()?;
+        }
+        Ok(())
+    }
+
+    pub fn pause(&self) -> Result<(), String> {
+        if self.playing.get() {
+            self.toggle()?;
+        }
+        Ok(())
+    }
+
+    pub fn stop(&self) -> Result<(), String> {
+        if self.current.borrow().is_none() {
+            return Ok(());
+        }
+        self.save_position();
+        self.player.set_state(gst::State::Null)
+            .map_err(|error| format!("Could not stop playback: {error}"))?;
+        *self.current.borrow_mut() = None;
+        self.playing.set(false);
+        self.finished.set(false);
+        self.position.set(0);
+        self.duration.set(0);
+        self.pending_resume.set(0);
+        self.notify();
+        Ok(())
+    }
+
+    pub fn play_next(&self) -> Result<(), String> {
+        let next = self.queue.borrow().front().cloned();
+        if let Some(next) = next {
+            self.play_episode(&next.show, &next.episode)?;
+            self.queue.borrow_mut().pop_front();
+            self.library_changed();
+        }
+        Ok(())
+    }
+
     pub fn is_current(&self, feed_url: &str, episode_id: &str) -> bool {
         self.current.borrow().as_ref().is_some_and(|item| {
             item.feed_url == feed_url && item.episode.id == episode_id
@@ -164,6 +222,10 @@ impl PlaybackController {
 
     pub fn duration(&self) -> u64 {
         self.duration.get()
+    }
+
+    pub fn seek_revision(&self) -> u64 {
+        self.seek_revision.get()
     }
 
     pub fn rate(&self) -> f64 {
@@ -259,6 +321,7 @@ impl PlaybackController {
             .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, gst::ClockTime::from_seconds(position))
             .map_err(|error| format!("Could not seek in this episode: {error}"))?;
         self.position.set(position);
+        self.seek_revision.set(self.seek_revision.get().wrapping_add(1));
         self.save_position();
         self.notify();
         Ok(())

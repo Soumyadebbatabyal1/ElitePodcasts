@@ -48,6 +48,8 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
                 .upcast();
         }
     };
+    let mpris = crate::mpris::Mpris::start(app, &playback);
+    app.connect_shutdown(move |_| mpris.stop());
     let overlay = adw::OverlaySplitView::new();
     overlay.set_collapsed(true);
     overlay.set_show_sidebar(false);

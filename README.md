@@ -28,6 +28,8 @@ Each episode row has artwork, date, title, a short description, and a play butto
 
 Right-click an episode row to Play Now or Queue Up. The menu stays closed for the current episode while it is playing or paused. New Episodes rows also offer Go to Show. Direct playback leaves the queue in place; after the current episode finishes, queued episodes play in order. The queue stays in memory and clears when the app closes. The sidebar button beside playback speed opens a native sliding Queue and History panel; a header button opens it when no episode is playing. The panel slides over the player. Completed episodes are saved to SQLite History until Clear History is used. Both tabs use native lists and provide controls to play entries again or remove queued entries.
 
+GNOME media controls use MPRIS on the session D-Bus. They show the current episode title, podcast, artwork, duration, position, and speed, and can play, pause, stop, seek, or advance to the next queued episode. Previous is unavailable because the app does not yet keep a previous-track queue. The MPRIS name is `org.mpris.MediaPlayer2.elitepodcasts`.
+
 New Episodes reads the latest 20 entries from each followed RSS feed only when you choose Check for New Episodes from its page menu or press Ctrl+R. Navigating away and back keeps the current list without fetching feeds again; reopening the app loads the saved list in a worker. A manual refresh keeps existing rows visible and adds results as individual feeds finish, so a slow feed does not hold up faster ones. It shows playable, unplayed episodes in local-date groups: Today, Yesterday, This week, This month, and Older. Rows use the same artwork, date, title, description, and play/pause button as the podcast page. Select a row for the same episode details dialog used on podcast pages. The page menu can open Keyboard Shortcuts with Ctrl+? and show About Elite Podcasts. Import Shows and Export Shows are disabled until those features are implemented. Checking again removes episodes that have since been played. Feeds that fail to load do not prevent other followed shows from appearing.
 
 The 10-second skip and speedometer symbolic icons in `assets/icons/` come from [GNOME Audio Player (Decibels)](https://gitlab.gnome.org/GNOME/decibels), licensed under GPL-3.0. They are bundled as application resources so GTK can recolor them with the active theme.
@@ -45,12 +47,13 @@ Search and category browsing need an internet connection on their first request.
 - `src/cache.rs` stores fetched directory responses, RSS details, the New Episodes snapshot, and artwork in the user cache directory.
 - `src/following.rs` saves followed podcasts in SQLite under the standard user data directory.
 - `src/playback.rs` manages GStreamer streaming and saved resume positions; `src/ui/player.rs` builds the adaptive player bar.
+- `src/mpris.rs` connects that playback controller to GNOME's D-Bus media controls.
 - `assets/artwork/` retains original local SVG placeholder art for a possible future feature; the carousel is currently hidden.
 - `assets/style.css` adds restrained styling; the accent CSS files use Apple blue in light and dark mode.
 
 ## Technology choices
 
-The app uses GTK4 through gtk4-rs 0.9, libadwaita through libadwaita-rs 0.7, and GStreamer through gstreamer-rs 0.23. The discovery client uses ureq 2.12 and serde; SHA-1 is used for cache file names. RSS is parsed with roxmltree. Following and resume positions use rusqlite with bundled SQLite, so no system SQLite development package is needed. GSettings, MPRIS, and downloads remain future work.
+The app uses GTK4 through gtk4-rs 0.9, libadwaita through libadwaita-rs 0.7, and GStreamer through gstreamer-rs 0.23. The discovery client uses ureq 2.12 and serde; SHA-1 is used for cache file names and stable MPRIS track paths. RSS is parsed with roxmltree. Following and resume positions use rusqlite with bundled SQLite, so no system SQLite development package is needed. MPRIS uses the GIO D-Bus support already included with GTK. GSettings and downloads remain future work.
 
 The proposed application ID `io.github.elite.Podcasts` is temporary. Confirm a final reverse-DNS ID before packaging or publishing.
 

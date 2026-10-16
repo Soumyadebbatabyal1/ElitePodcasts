@@ -8,6 +8,10 @@ pub fn run() {
         .application_id("io.github.elite.Podcasts")
         .build();
     app.connect_activate(|app| {
+        if let Some(window) = app.active_window() {
+            window.present();
+            return;
+        }
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::IconTheme::for_display(&display)
                 .add_resource_path("/io/github/elite/Podcasts/icons");
