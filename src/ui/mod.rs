@@ -48,6 +48,8 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
                 .upcast();
         }
     };
+    let playback_on_shutdown = playback.clone();
+    app.connect_shutdown(move |_| playback_on_shutdown.persist_on_exit());
     let mpris = crate::mpris::Mpris::start(app, &playback);
     app.connect_shutdown(move |_| mpris.stop());
     let overlay = adw::OverlaySplitView::new();
@@ -122,6 +124,7 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     let idle_library = gtk::Button::from_icon_name("sidebar-show-right-symbolic");
     idle_library.add_css_class("flat");
     idle_library.set_tooltip_text(Some("Queue and History"));
+    idle_library.set_visible(playback.current().is_none());
     let weak_overlay = overlay.downgrade();
     idle_library.connect_clicked(move |_| {
         if let Some(overlay) = weak_overlay.upgrade() {

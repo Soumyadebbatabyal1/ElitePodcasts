@@ -250,6 +250,7 @@ pub(super) fn bar(
         updating_speed.set(false);
         true
     });
+    playback.refresh_ui();
 
     let compact = adw::BreakpointBin::new();
     compact.add_css_class("player-surface");

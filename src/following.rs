@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 use crate::discovery_service::{Episode, Show};
 
@@ -77,6 +77,12 @@ impl FollowingStore {
                 show_json TEXT NOT NULL,
                 episode_json TEXT NOT NULL,
                 completed_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE IF NOT EXISTS player_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                show_json TEXT,
+                episode_json TEXT,
+                rate REAL NOT NULL DEFAULT 1.0
             );",
             )
             .map_err(|error| format!("Could not prepare the podcast database: {error}"))?;
@@ -198,6 +204,58 @@ impl FollowingStore {
             )
             .unwrap_or(0)
             .max(0) as u64
+    }
+
+    pub fn player_state(&self) -> Result<(Option<(Show, Episode)>, f64), String> {
+        let row = self.connection.query_row(
+            "SELECT show_json, episode_json, rate FROM player_state WHERE id = 1",
+            [],
+            |row| Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, f64>(2)?,
+            )),
+        ).optional().map_err(|error| format!("Could not read player state: {error}"))?;
+        let Some((show_json, episode_json, rate)) = row else {
+            return Ok((None, 1.0));
+        };
+        let episode = match (show_json, episode_json) {
+            (Some(show), Some(episode)) => Some((
+                serde_json::from_str(&show).map_err(|error| format!("Could not read saved show: {error}"))?,
+                serde_json::from_str(&episode).map_err(|error| format!("Could not read saved episode: {error}"))?,
+            )),
+            _ => None,
+        };
+        Ok((episode, rate))
+    }
+
+    pub fn save_player_episode(&self, show: &Show, episode: &Episode, rate: f64) -> Result<(), String> {
+        let show_json = serde_json::to_string(show).map_err(|error| error.to_string())?;
+        let episode_json = serde_json::to_string(episode).map_err(|error| error.to_string())?;
+        self.connection.execute(
+            "INSERT INTO player_state (id, show_json, episode_json, rate) VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+             show_json = excluded.show_json, episode_json = excluded.episode_json, rate = excluded.rate",
+            params![show_json, episode_json, rate],
+        ).map_err(|error| format!("Could not save player state: {error}"))?;
+        Ok(())
+    }
+
+    pub fn save_playback_rate(&self, rate: f64) -> Result<(), String> {
+        self.connection.execute(
+            "INSERT INTO player_state (id, rate) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET rate = excluded.rate",
+            [rate],
+        ).map_err(|error| format!("Could not save playback speed: {error}"))?;
+        Ok(())
+    }
+
+    pub fn clear_player_episode(&self) -> Result<(), String> {
+        self.connection.execute(
+            "UPDATE player_state SET show_json = NULL, episode_json = NULL WHERE id = 1",
+            [],
+        ).map_err(|error| format!("Could not clear finished episode: {error}"))?;
+        Ok(())
     }
 
     pub fn save_playback_position(
