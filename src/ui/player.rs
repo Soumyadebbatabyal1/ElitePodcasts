@@ -137,18 +137,30 @@ pub(super) fn bar(
     choices.set_margin_bottom(6);
     choices.set_margin_start(6);
     choices.set_margin_end(6);
+    let updating_speed = Rc::new(Cell::new(false));
+    let mut first_choice: Option<gtk::CheckButton> = None;
+    let mut speed_choices = Vec::new();
     for rate in [0.75, 1.0, 1.25, 1.5, 1.75, 2.0] {
-        let choice = gtk::Button::with_label(&format!("{rate:.2}×"));
-        choice.add_css_class("flat");
+        let choice = gtk::CheckButton::with_label(&format!("{rate:.2}×"));
+        if let Some(first) = &first_choice {
+            choice.set_group(Some(first));
+        } else {
+            first_choice = Some(choice.clone());
+        }
         let playback = playback.clone();
         let popover = speed_popover.clone();
         let toast = toast.clone();
-        choice.connect_clicked(move |_| {
+        let updating = updating_speed.clone();
+        choice.connect_toggled(move |choice| {
+            if !choice.is_active() || updating.get() {
+                return;
+            }
             if let Err(error) = playback.set_rate(rate) {
                 toast(&error);
             }
             popover.popdown();
         });
+        speed_choices.push((rate, choice.downgrade()));
         choices.append(&choice);
     }
     speed_popover.set_child(Some(&choices));
@@ -226,6 +238,16 @@ pub(super) fn bar(
         updating_seek.set(false);
         time.set_text(&format!("{} / {}", clock_text(position, show_hours), clock_text(duration, show_hours)));
         speed.set_text(&format!("{:.2}×", playback_for_update.rate()));
+        updating_speed.set(true);
+        for (rate, choice) in &speed_choices {
+            if let Some(choice) = choice.upgrade() {
+                if (rate - playback_for_update.rate()).abs() < 0.001 {
+                    choice.set_active(true);
+                    break;
+                }
+            }
+        }
+        updating_speed.set(false);
         true
     });
 
