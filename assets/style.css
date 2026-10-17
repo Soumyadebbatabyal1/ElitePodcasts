@@ -49,11 +49,6 @@
   font-weight: 700;
 }
 
-.network-tile {
-  padding: 0;
-  border-radius: 12px;
-}
-
 .podcast-artwork,
 .artwork-placeholder {
   border-radius: 10px;

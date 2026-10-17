@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::OnceLock;
 use std::time::Duration;
 use crate::cache;
 
@@ -21,29 +20,6 @@ pub struct Show {
     pub feed_url: String,
     pub artwork_urls: Vec<String>,
     pub updated: Option<String>,
-}
-
-#[derive(Clone, Deserialize)]
-pub struct CuratedNetwork {
-    pub name: String,
-    pub description: String,
-    pub shows: Vec<Show>,
-}
-
-pub fn curated_networks() -> &'static [CuratedNetwork] {
-    static NETWORKS: OnceLock<Vec<CuratedNetwork>> = OnceLock::new();
-    NETWORKS.get_or_init(|| {
-        serde_json::from_str(include_str!("../assets/curated_networks.json"))
-            .expect("The bundled curated network catalog must be valid JSON")
-    })
-}
-
-pub fn network(name: &str) -> Result<Vec<Show>, String> {
-    curated_networks()
-        .iter()
-        .find(|network| network.name == name)
-        .map(|network| network.shows.clone())
-        .ok_or_else(|| "This network is unavailable.".to_string())
 }
 
 #[derive(Clone, Serialize, Deserialize)]
