@@ -5,6 +5,7 @@ mod episode_row;
 mod following;
 mod library_panel;
 mod new_episodes;
+mod opml_io;
 mod player;
 
 use adw::prelude::*;
@@ -282,12 +283,12 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         }
     });
     let new_page = new_episodes::page(
-        store, artwork.clone(), playback.clone(), toast.clone(), episodes_busy,
+        store.clone(), artwork.clone(), playback.clone(), toast.clone(), episodes_busy,
         open_from_following.clone(),
     );
     let restore_new_episodes = new_page.restore.clone();
     pages.add_named(&new_page.widget, Some("new-episodes"));
-    setup_episodes_menu(window, app, &pages, &episodes_menu, new_page.refresh);
+    setup_episodes_menu(window, app, &pages, &episodes_menu, new_page.refresh, store, toast.clone());
     let episodes_menu_for_page = episodes_menu.clone();
     pages.connect_visible_child_name_notify(move |pages| {
         episodes_menu_for_page.set_visible(pages.visible_child_name().as_deref() == Some("new-episodes"));
@@ -437,6 +438,8 @@ fn setup_episodes_menu(
     pages: &gtk::Stack,
     menu: &gtk::MenuButton,
     refresh: Rc<dyn Fn()>,
+    store: Rc<FollowingStore>,
+    toast: Rc<dyn Fn(&str)>,
 ) {
     let refresh_action = gtk::gio::SimpleAction::new("refresh-episodes", None);
     let weak_pages = pages.downgrade();
@@ -474,15 +477,7 @@ fn setup_episodes_menu(
     });
     window.add_action(&about_action);
 
-    for (name, accelerator) in [
-        ("import-shows", "<Primary>o"),
-        ("export-shows", "<Primary>e"),
-    ] {
-        let action = gtk::gio::SimpleAction::new(name, None);
-        action.set_enabled(false);
-        window.add_action(&action);
-        app.set_accels_for_action(&format!("win.{name}"), &[accelerator]);
-    }
+    opml_io::install_actions(window, app, store, toast);
 
     let model = gtk::gio::Menu::new();
     let feed_actions = gtk::gio::Menu::new();
@@ -505,6 +500,8 @@ fn show_shortcuts(window: &adw::ApplicationWindow) {
     body.set_margin_end(24);
     for (label, keys) in [
         ("Check for New Episodes", "<Primary>r"),
+        ("Import Shows", "<Primary>o"),
+        ("Export Shows", "<Primary>e"),
         ("Keyboard Shortcuts", "<Primary>question"),
     ] {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
@@ -522,7 +519,7 @@ fn show_shortcuts(window: &adw::ApplicationWindow) {
     adw::Dialog::builder()
         .title("Keyboard Shortcuts")
         .content_width(420)
-        .content_height(180)
+        .content_height(250)
         .child(&toolbar)
         .build()
         .present(Some(window));

@@ -141,6 +141,60 @@ impl FollowingStore {
         Ok(changed)
     }
 
+    /// Add an OPML list in one transaction and refresh the Following grid once.
+    pub fn add_many(&self, shows: &[Show]) -> Result<Vec<Show>, String> {
+        let transaction = self.connection.unchecked_transaction()
+            .map_err(|error| format!("Could not begin importing shows: {error}"))?;
+        let mut inserted = Vec::new();
+        {
+            let mut statement = transaction.prepare(
+                "INSERT OR IGNORE INTO following (feed_url, title, author, artwork_urls, updated)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            ).map_err(|error| format!("Could not prepare show import: {error}"))?;
+            for show in shows {
+                let artwork = serde_json::to_string(&show.artwork_urls)
+                    .map_err(|error| error.to_string())?;
+                if statement.execute(params![show.feed_url, show.title, show.author, artwork, show.updated])
+                    .map_err(|error| format!("Could not import shows: {error}"))? > 0 {
+                    inserted.push(show.clone());
+                }
+            }
+        }
+        transaction.commit().map_err(|error| format!("Could not save imported shows: {error}"))?;
+        if !inserted.is_empty() {
+            self.notify();
+        }
+        Ok(inserted)
+    }
+
+    /// Fill the missing artwork and titles of newly imported shows from their RSS feeds.
+    pub fn enrich_imported(&self, details: &[(String, String, Option<String>)]) -> Result<(), String> {
+        if details.is_empty() { return Ok(()) }
+        let transaction = self.connection.unchecked_transaction()
+            .map_err(|error| format!("Could not begin updating imported shows: {error}"))?;
+        let mut changed = 0;
+        {
+            let mut statement = transaction.prepare(
+                "UPDATE following SET
+                   title = CASE WHEN title = feed_url AND ?2 != '' THEN ?2 ELSE title END,
+                   artwork_urls = CASE WHEN artwork_urls = '[]' AND ?3 != '' THEN ?3 ELSE artwork_urls END
+                 WHERE feed_url = ?1 AND
+                   ((title = feed_url AND ?2 != '') OR (artwork_urls = '[]' AND ?3 != ''))",
+            ).map_err(|error| format!("Could not prepare imported artwork: {error}"))?;
+            for (feed_url, title, artwork_url) in details {
+                let artwork = artwork_url.as_ref()
+                    .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+                    .map(|url| serde_json::to_string(&vec![url]).unwrap_or_default())
+                    .unwrap_or_default();
+                changed += statement.execute(params![feed_url, title, artwork])
+                    .map_err(|error| format!("Could not update imported artwork: {error}"))?;
+            }
+        }
+        transaction.commit().map_err(|error| format!("Could not save imported artwork: {error}"))?;
+        if changed > 0 { self.notify(); }
+        Ok(())
+    }
+
     pub fn remove(&self, feed_url: &str) -> Result<bool, String> {
         let changed = self
             .connection
