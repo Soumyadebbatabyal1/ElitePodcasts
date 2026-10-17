@@ -49,6 +49,11 @@
   font-weight: 700;
 }
 
+.network-tile {
+  padding: 0;
+  border-radius: 12px;
+}
+
 .podcast-artwork,
 .artwork-placeholder {
   border-radius: 10px;
@@ -173,6 +178,11 @@ label link.more-link {
 
 .player-surface {
   background-color: @window_bg_color;
+}
+
+.queue-indicator {
+  background-color: @accent_bg_color;
+  border-radius: 999px;
 }
 
 .library-icon-action,

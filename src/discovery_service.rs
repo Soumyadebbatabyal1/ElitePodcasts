@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::OnceLock;
 use std::time::Duration;
 use crate::cache;
 
@@ -9,6 +10,8 @@ const LOOKUP_URL: &str = "https://itunes.apple.com/lookup";
 const MAX_FEED_BYTES: u64 = 32 * 1024 * 1024;
 const DIRECTORY_CACHE_AGE: Duration = Duration::from_secs(30 * 60);
 const FEED_CACHE_AGE: Duration = Duration::from_secs(15 * 60);
+const FEED_CACHE_KIND: &str = "feeds-v2";
+const OLD_FEED_CACHE_KIND: &str = "feeds-v1";
 pub(crate) const USER_AGENT: &str = "ElitePodcasts/0.1 (io.github.elite.Podcasts; native GNOME podcast app)";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -18,6 +21,29 @@ pub struct Show {
     pub feed_url: String,
     pub artwork_urls: Vec<String>,
     pub updated: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct CuratedNetwork {
+    pub name: String,
+    pub description: String,
+    pub shows: Vec<Show>,
+}
+
+pub fn curated_networks() -> &'static [CuratedNetwork] {
+    static NETWORKS: OnceLock<Vec<CuratedNetwork>> = OnceLock::new();
+    NETWORKS.get_or_init(|| {
+        serde_json::from_str(include_str!("../assets/curated_networks.json"))
+            .expect("The bundled curated network catalog must be valid JSON")
+    })
+}
+
+pub fn network(name: &str) -> Result<Vec<Show>, String> {
+    curated_networks()
+        .iter()
+        .find(|network| network.name == name)
+        .map(|network| network.shows.clone())
+        .ok_or_else(|| "This network is unavailable.".to_string())
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -237,26 +263,27 @@ fn category_request(genre: u32) -> Result<Vec<Show>, String> {
 }
 
 pub fn feed(url: &str) -> Result<FeedDetails, String> {
-    if let Some(cached) = cache::read_json("feeds-v1", url, Some(FEED_CACHE_AGE)) {
+    if let Some(cached) = cache::read_json(FEED_CACHE_KIND, url, Some(FEED_CACHE_AGE)) {
         return Ok(cached);
     }
-    if let Some(cached) = cache::read_json("feeds-v1", url, None) {
+    if let Some(cached) = cache::read_json(FEED_CACHE_KIND, url, None) {
         let url = url.to_string();
         std::thread::spawn(move || {
             let _ = feed_fresh(&url);
         });
         return Ok(cached);
     }
-    feed_fresh(url).or_else(|error| cache::read_json("feeds-v1", url, None).ok_or(error))
+    feed_fresh(url).or_else(|error| cache::read_json(OLD_FEED_CACHE_KIND, url, None).ok_or(error))
 }
 
 pub fn cached_feed(url: &str) -> Option<FeedDetails> {
-    cache::read_json("feeds-v1", url, None)
+    cache::read_json(FEED_CACHE_KIND, url, None)
+        .or_else(|| cache::read_json(OLD_FEED_CACHE_KIND, url, None))
 }
 
 pub fn feed_fresh(url: &str) -> Result<FeedDetails, String> {
     let details = fetch_feed(url)?;
-    cache::write_json("feeds-v1", url, &details);
+    cache::write_json(FEED_CACHE_KIND, url, &details);
     Ok(details)
 }
 
@@ -318,14 +345,7 @@ fn fetch_feed(url: &str) -> Result<FeedDetails, String> {
                         .then(|| url.to_string())
                 });
             let audio_url = audio_source;
-            let artwork_url = node.children().find_map(|child| {
-                (child.is_element()
-                    && matches!(child.tag_name().name(), "image" | "thumbnail"))
-                    .then(|| child.attribute("href").or_else(|| child.attribute("url")))
-                    .flatten()
-                    .filter(|url| usable_feed_url(url))
-                    .map(str::to_string)
-            });
+            let artwork_url = episode_artwork(node);
             Episode {
                 id: if guid.is_empty() {
                     format!("{title}\u{1f}{date}")
@@ -371,6 +391,58 @@ fn fetch_feed(url: &str) -> Result<FeedDetails, String> {
         all_episode_ids,
         episodes,
     })
+}
+
+fn episode_artwork(item: roxmltree::Node<'_, '_>) -> Option<String> {
+    let image_url = |node: roxmltree::Node<'_, '_>| {
+        node.attribute("href")
+            .or_else(|| node.attribute("url"))
+            .or_else(|| {
+                node.children()
+                    .find(|child| child.is_element() && child.tag_name().name() == "url")
+                    .and_then(|child| child.text())
+            })
+            .map(str::trim)
+            .filter(|url| usable_feed_url(url))
+            .map(str::to_string)
+    };
+
+    // Prefer item-level artwork, then images within Media RSS groups.
+    item.children()
+        .filter(|node| node.is_element())
+        .filter(|node| matches!(node.tag_name().name(), "image" | "thumbnail"))
+        .find_map(image_url)
+        .or_else(|| {
+            item.descendants()
+                .skip(1)
+                .filter(|node| node.is_element() && node.tag_name().name() == "thumbnail")
+                .find_map(image_url)
+        })
+        .or_else(|| {
+            item.descendants()
+                .skip(1)
+                .filter(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == "content"
+                        && (node.attribute("medium") == Some("image")
+                            || node.attribute("type").is_some_and(|kind| kind.starts_with("image/")))
+                })
+                .find_map(image_url)
+        })
+        .or_else(|| {
+            item.children()
+                .filter(|node| node.is_element() && node.tag_name().name() == "images")
+                .filter_map(|node| node.attribute("srcset"))
+                .flat_map(|srcset| srcset.split(','))
+                .filter_map(|entry| {
+                    let mut parts = entry.split_whitespace();
+                    let url = parts.next()?;
+                    let width = parts.next()?.strip_suffix('w')?.parse::<u32>().ok()?;
+                    usable_feed_url(url).then(|| (width, url.to_string()))
+                })
+                .max_by_key(|(width, _)| *width)
+                .map(|(_, url)| url)
+        })
 }
 
 fn parse_duration(raw: &str) -> Option<u64> {

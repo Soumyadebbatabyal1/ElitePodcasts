@@ -125,6 +125,7 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     let idle_library = gtk::Button::from_icon_name("sidebar-show-right-symbolic");
     idle_library.add_css_class("flat");
     idle_library.set_tooltip_text(Some("Queue and History"));
+    queue_button_with_indicator(&idle_library, &playback);
     idle_library.set_visible(playback.current().is_none());
     let weak_overlay = overlay.downgrade();
     idle_library.connect_clicked(move |_| {
@@ -393,6 +394,37 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     overlay.set_sidebar(Some(&library_panel::panel(playback, artwork, toast, close_panel)));
     toast_overlay.set_child(Some(&overlay));
     toast_overlay.upcast()
+}
+
+pub(super) fn queue_button_with_indicator(
+    button: &gtk::Button,
+    playback: &Rc<PlaybackController>,
+) {
+    let Some(icon) = button.child() else { return };
+    button.set_child(None::<&gtk::Widget>);
+    let overlay = gtk::Overlay::new();
+    overlay.set_size_request(16, 16);
+    overlay.set_halign(gtk::Align::Center);
+    overlay.set_valign(gtk::Align::Center);
+    overlay.set_child(Some(&icon));
+    let indicator = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    indicator.add_css_class("queue-indicator");
+    indicator.set_size_request(6, 6);
+    indicator.set_halign(gtk::Align::End);
+    indicator.set_valign(gtk::Align::Start);
+    indicator.set_can_target(false);
+    indicator.set_visible(!playback.queue().is_empty());
+    overlay.add_overlay(&indicator);
+    button.set_child(Some(&overlay));
+    let weak_indicator = indicator.downgrade();
+    let weak_playback = Rc::downgrade(playback);
+    playback.watch(move || {
+        let (Some(indicator), Some(playback)) = (weak_indicator.upgrade(), weak_playback.upgrade()) else {
+            return false;
+        };
+        indicator.set_visible(!playback.queue().is_empty());
+        true
+    });
 }
 
 fn navigation_row(icon: &str, label: &str) -> gtk::ListBoxRow {

@@ -86,11 +86,10 @@ impl ArtworkLoader {
     pub fn cached_widget(&self, candidates: &[String], size: i32) -> gtk::Widget {
         let (widget, picture) = self.make_widget(size);
         let mut displayed_url = None;
+        self.advance(candidates);
         if let Some((url, pixbuf)) = self.best_pixbuf(candidates) {
             set_picture_pixbuf(&picture, &pixbuf, size);
             displayed_url = Some(url);
-        } else {
-            self.advance(candidates);
         }
         self.bindings.borrow_mut().push(ArtworkBinding {
             picture: picture.downgrade(),
@@ -126,8 +125,7 @@ impl ArtworkLoader {
     fn best_pixbuf(&self, candidates: &[String]) -> Option<(String, gtk::gdk_pixbuf::Pixbuf)> {
         let cache = self.cache.borrow();
         candidates.iter()
-            .filter_map(|url| cache.get(url).map(|pixbuf| (url, pixbuf)))
-            .max_by_key(|(_, pixbuf)| pixbuf.width() * pixbuf.height())
+            .find_map(|url| cache.get(url).map(|pixbuf| (url, pixbuf)))
             .map(|(url, pixbuf)| (url.clone(), pixbuf.clone()))
     }
 
@@ -135,13 +133,12 @@ impl ArtworkLoader {
         self.bindings.borrow_mut().retain(|binding| binding.picture.upgrade().is_some());
         for binding in self.bindings.borrow_mut().iter_mut() {
             if let Some(picture) = binding.picture.upgrade() {
+                self.advance(&binding.candidates);
                 if let Some((url, pixbuf)) = self.best_pixbuf(&binding.candidates) {
                     if binding.displayed_url.as_deref() != Some(&url) {
                         set_picture_pixbuf(&picture, &pixbuf, binding.size);
                         binding.displayed_url = Some(url);
                     }
-                } else {
-                    self.advance(&binding.candidates);
                 }
             }
         }

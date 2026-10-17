@@ -15,6 +15,7 @@ use crate::playback::PlaybackController;
 enum Request {
     Search(String),
     Category(String),
+    Network(String),
 }
 
 pub(super) struct DiscoveryPage {
@@ -224,7 +225,15 @@ pub(super) fn page(
         .vexpand(true)
         .child(&feed_clamp)
         .build();
-    view.add_named(&feed_scroller, Some("feed"));
+    let feed_state = gtk::Stack::new();
+    feed_state.set_vexpand(true);
+    feed_state.add_named(&feed_scroller, Some("content"));
+    let missing_feed = adw::StatusPage::builder()
+        .icon_name("network-error-symbolic")
+        .title("Podcast feed not found (404)")
+        .build();
+    feed_state.add_named(&missing_feed, Some("not-found"));
+    view.add_named(&feed_state, Some("feed"));
 
     let generation = Rc::new(Cell::new(0u64));
     let result_title = Rc::new(RefCell::new(String::from("Search results")));
@@ -270,6 +279,7 @@ pub(super) fn page(
         let mark_action = mark_action.clone();
         let play_action = play_action.clone();
         let latest_button = latest_button.clone();
+        let feed_state = feed_state.clone();
         let current_latest = current_latest.clone();
         let playback = playback.clone();
         let toast = toast.clone();
@@ -299,6 +309,7 @@ pub(super) fn page(
             *current_latest.borrow_mut() = None;
             play_action.set_enabled(false);
             latest_button.set_sensitive(false);
+            feed_state.set_visible_child_name("content");
             clear(&episodes);
             view.set_transition_type(if animate {
                 gtk::StackTransitionType::SlideLeft
@@ -335,6 +346,7 @@ pub(super) fn page(
             let selected_show = selected_show.clone();
             let play_action = play_action.clone();
             let latest_button = latest_button.clone();
+            let feed_state = feed_state.clone();
             let current_latest = current_latest.clone();
             let playback = playback.clone();
             let toast = toast.clone();
@@ -410,9 +422,13 @@ pub(super) fn page(
                             }
                             Err(message) => {
                                 status(&fallback_title, false);
-                                show_message(&episodes, "Could not load RSS feed", &message);
-                                actions.set_visible(true);
-                                feed_content.set_visible(true);
+                                if message.contains("HTTP 404") {
+                                    feed_state.set_visible_child_name("not-found");
+                                } else {
+                                    show_message(&episodes, "Could not load RSS feed", &message);
+                                    actions.set_visible(true);
+                                    feed_content.set_visible(true);
+                                }
                             }
                         }
                         gtk::glib::ControlFlow::Break
@@ -459,7 +475,14 @@ pub(super) fn page(
             let cue_first = matches!(&request, Request::Search(_));
             let title = match &request {
                 Request::Search(_) => "Search results".to_string(),
-                Request::Category(name) => name.clone(),
+                Request::Category(name) | Request::Network(name) => name.clone(),
+            };
+            let network_intro = match &request {
+                Request::Network(name) => discovery_service::curated_networks()
+                    .iter()
+                    .find(|network| &network.name == name)
+                    .map(|network| (network.description.clone(), network.shows.len())),
+                _ => None,
             };
             *result_title.borrow_mut() = title.clone();
             status(&title, false);
@@ -482,6 +505,7 @@ pub(super) fn page(
                 let answer = match request {
                     Request::Search(term) => discovery_service::search(&term),
                     Request::Category(name) => discovery_service::category(&name),
+                    Request::Network(name) => discovery_service::network(&name),
                 };
                 let _ = tx.send(answer);
             });
@@ -507,6 +531,9 @@ pub(super) fn page(
                         match answer {
                             Ok(shows) => {
                                 clear(&listing);
+                                if let Some((description, count)) = network_intro.as_ref() {
+                                    show_network_intro(&listing, description, *count);
+                                }
                                 show_results(&listing, shows, open_feed.clone(), &artwork, cue_first, &store, toast.clone());
                                 listing.set_visible(true);
                                 status(&title, false);
@@ -546,6 +573,7 @@ pub(super) fn page(
     content.set_margin_top(16);
     content.set_margin_bottom(24);
     content.append(&categories(request.clone()));
+    content.append(&networks(request.clone(), artwork.clone()));
 
     let clamp = adw::Clamp::builder().maximum_size(800).build();
     clamp.set_margin_start(16);
@@ -621,6 +649,24 @@ fn show_message(container: &gtk::Box, title: &str, message: &str) {
     detail.add_css_class("dim-label");
     content.append(&detail);
     container.append(&content);
+}
+
+fn show_network_intro(container: &gtk::Box, description: &str, count: usize) {
+    let intro = gtk::Box::new(gtk::Orientation::Vertical, 5);
+    intro.set_margin_bottom(18);
+    let description_label = gtk::Label::new(Some(description));
+    description_label.set_xalign(0.0);
+    description_label.set_wrap(true);
+    intro.append(&description_label);
+    let count_label = gtk::Label::new(Some(&format!(
+        "{count} selected {}",
+        if count == 1 { "podcast" } else { "podcasts" }
+    )));
+    count_label.set_xalign(0.0);
+    count_label.add_css_class("dim-label");
+    count_label.add_css_class("caption");
+    intro.append(&count_label);
+    container.append(&intro);
 }
 
 fn show_results(
@@ -990,4 +1036,62 @@ fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
     }
 
     flow.upcast()
+}
+
+fn networks(request: Rc<dyn Fn(Request)>, artwork: Rc<ArtworkLoader>) -> gtk::Widget {
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let heading = gtk::Label::new(Some("Podcast networks"));
+    heading.set_xalign(0.0);
+    heading.add_css_class("title-2");
+    section.append(&heading);
+
+    let flow = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .min_children_per_line(1)
+        .max_children_per_line(2)
+        .column_spacing(10)
+        .row_spacing(10)
+        .homogeneous(true)
+        .build();
+    for network in discovery_service::curated_networks() {
+        let tile = gtk::Button::new();
+        tile.add_css_class("card");
+        tile.add_css_class("network-tile");
+        tile.set_size_request(250, 72);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        row.set_margin_start(10);
+        row.set_margin_end(10);
+        row.set_margin_top(10);
+        row.set_margin_bottom(10);
+        if let Some(show) = network.shows.first() {
+            let preview = artwork.cached_widget(&show.artwork_urls, 48);
+            preview.set_tooltip_text(Some(&format!("Artwork from {}", show.title)));
+            row.append(&preview);
+        }
+        let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        labels.set_valign(gtk::Align::Center);
+        labels.set_hexpand(true);
+        let name = gtk::Label::new(Some(&network.name));
+        name.set_xalign(0.0);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        labels.append(&name);
+        let count = gtk::Label::new(Some(&format!(
+            "{} selected {}",
+            network.shows.len(),
+            if network.shows.len() == 1 { "podcast" } else { "podcasts" }
+        )));
+        count.set_xalign(0.0);
+        count.add_css_class("caption");
+        count.add_css_class("dim-label");
+        labels.append(&count);
+        row.append(&labels);
+        row.append(&gtk::Image::from_icon_name("go-next-symbolic"));
+        tile.set_child(Some(&row));
+        let request = request.clone();
+        let network_name = network.name.clone();
+        tile.connect_clicked(move |_| request(Request::Network(network_name.clone())));
+        flow.insert(&tile, -1);
+    }
+    section.append(&flow);
+    section.upcast()
 }

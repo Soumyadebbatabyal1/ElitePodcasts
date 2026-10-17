@@ -177,6 +177,7 @@ pub(super) fn bar(
     library.set_size_request(28, 28);
     library.set_valign(gtk::Align::Center);
     library.connect_clicked(move |_| open_panel());
+    super::queue_button_with_indicator(&library, &playback);
     trailing.append(&library);
     bar.append(&trailing);
 

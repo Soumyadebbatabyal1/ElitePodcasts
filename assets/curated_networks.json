@@ -1,0 +1,286 @@
+[
+  {
+    "name": "The New Yorker",
+    "description": "Politics, culture, and stories from The New Yorker.",
+    "shows": [
+      {
+        "title": "The New Yorker Radio Hour",
+        "author": "WNYC Studios and The New Yorker",
+        "feed_url": "https://feeds.simplecast.com/TRuO_SRo",
+        "artwork_urls": [
+          "https://image.simplecastcdn.com/images/b99b6401-4efd-485f-b744-84da8d6c14f6/69e0442c-6efc-4039-a258-c3e699882f12/3000x3000/nyrh-showsquare-2025-3000x3000.jpg?aid=rss_feed"
+        ]
+      },
+      {
+        "title": "In The Dark",
+        "author": "The New Yorker",
+        "feed_url": "https://feeds.megaphone.fm/CNE3915766304",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/598d0700-73ec-11f1-8e29-4b8af072e87c/image/6e668a027b7fc8f39d8890a8aee2ce96.png?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      },
+      {
+        "title": "Critics at Large | The New Yorker",
+        "author": "The New Yorker",
+        "feed_url": "https://feeds.megaphone.fm/CNE4835008151",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/4f69f028-73c7-11f1-bb4b-73d81673c7df/image/cbb241397133e2b51041f21b2415fff9.jpg?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "BBC",
+    "description": "News, ideas, and documentaries from the BBC.",
+    "shows": [
+      {
+        "title": "Global News Podcast",
+        "author": "BBC World Service",
+        "feed_url": "https://podcasts.files.bbci.co.uk/p02nq0gn.rss",
+        "artwork_urls": [
+          "https://ichef.bbci.co.uk/images/ic/3000x3000/p0pc2j9y.jpg"
+        ]
+      },
+      {
+        "title": "In Our Time",
+        "author": "BBC Radio 4",
+        "feed_url": "https://podcasts.files.bbci.co.uk/b006qykl.rss",
+        "artwork_urls": [
+          "https://ichef.bbci.co.uk/images/ic/3000x3000/p0p8dsw0.jpg"
+        ]
+      },
+      {
+        "title": "The Documentary Podcast",
+        "author": "BBC World Service",
+        "feed_url": "https://podcasts.files.bbci.co.uk/p02nq0lx.rss",
+        "artwork_urls": [
+          "https://ichef.bbci.co.uk/images/ic/3000x3000/p0p8d4hv.jpg"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Pushkin Industries",
+    "description": "Stories and ideas from Pushkin Industries.",
+    "shows": [
+      {
+        "title": "Revisionist History",
+        "author": "Pushkin Industries",
+        "feed_url": "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/0e563f45-9d14-4ce8-8ef0-ae32006cd7e7/0d4cc74d-fff7-4b89-8818-ae32006cd7f0/podcast.rss",
+        "artwork_urls": [
+          "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/0e563f45-9d14-4ce8-8ef0-ae32006cd7e7/0d4cc74d-fff7-4b89-8818-ae32006cd7f0/image.jpg?t=1790020110&size=Large"
+        ]
+      },
+      {
+        "title": "The Happiness Lab with Dr. Laurie Santos",
+        "author": "Pushkin Industries",
+        "feed_url": "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/96c5c41e-0bc8-4661-b184-ae32006cd726/d623ef0b-3fee-4c26-b815-ae32006cd739/podcast.rss",
+        "artwork_urls": [
+          "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/96c5c41e-0bc8-4661-b184-ae32006cd726/d623ef0b-3fee-4c26-b815-ae32006cd739/image.jpg?t=1789652340&size=Large"
+        ]
+      },
+      {
+        "title": "Against the Rules with Michael Lewis",
+        "author": "Pushkin Industries",
+        "feed_url": "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/f4e26994-3ddb-4ec7-b855-ae32006cd5de/ea4fae0c-3282-4cfd-b315-ae32006cd5ec/podcast.rss",
+        "artwork_urls": [
+          "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/f4e26994-3ddb-4ec7-b855-ae32006cd5de/ea4fae0c-3282-4cfd-b315-ae32006cd5ec/image.jpg?t=1780573170&size=Large"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Maximum Fun",
+    "description": "Comedy and culture from Maximum Fun.",
+    "shows": [
+      {
+        "title": "My Brother, My Brother And Me",
+        "author": "The McElroys",
+        "feed_url": "https://feeds.simplecast.com/wjQvYtdl",
+        "artwork_urls": [
+          "https://image.simplecastcdn.com/images/9ba52d4c-4e8c-4203-a3de-be89969671f2/3283a7fa-7538-489d-9702-1547c7b6dabc/3000x3000/mbmbam_cover_art.jpg?aid=rss_feed"
+        ]
+      },
+      {
+        "title": "Judge John Hodgman",
+        "author": "John Hodgman and Maximum Fun",
+        "feed_url": "https://feeds.simplecast.com/q8x9cVws",
+        "artwork_urls": [
+          "https://image.simplecastcdn.com/images/a653f249-c3f5-443b-8b70-791322de51f0/e017ab47-203a-462a-af11-8462b2ee78ea/3000x3000/jjho-apple-podcast-logo.jpg?aid=rss_feed"
+        ]
+      },
+      {
+        "title": "Sawbones: A Marital Tour of Misguided Medicine",
+        "author": "Justin McElroy, Dr. Sydnee McElroy",
+        "feed_url": "https://feeds.simplecast.com/y1LF_sn2",
+        "artwork_urls": [
+          "https://image.simplecastcdn.com/images/ee8ef2f9-5bb2-4a0a-bad7-44fd3b17d53c/3c7d6aae-f46d-4881-9705-a7213fb0a05d/3000x3000/sawbonesalbumartrevisionsfinalresize872025.jpg?aid=rss_feed"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "Vox Media",
+    "description": "News, science, and technology from Vox Media.",
+    "shows": [
+      {
+        "title": "Today, Explained",
+        "author": "Vox",
+        "feed_url": "https://feeds.megaphone.fm/VMP5705694065",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/23d52a2a-1c5f-11ea-9a0e-b70170f2a827/image/uploads_2F1588357113366-jjsdfzx6x4m-c0339c10f9b113a5fcc93436e66e5ef4_2FTodayExplained+V2_Tile_3000x3000+_281_29.png?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      },
+      {
+        "title": "The Vergecast",
+        "author": "The Verge",
+        "feed_url": "https://feeds.megaphone.fm/vergecast",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/e4c412e6-e1f0-11e8-9bde-83f9d376f059/image/fa367fa8b1b6ca01fc4b8c34d83ba4d8.jpg?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      },
+      {
+        "title": "Unexplainable",
+        "author": "Vox",
+        "feed_url": "https://feeds.megaphone.fm/VMP9331026707",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/bf04a680-6afe-11eb-a86a-3f07259749a3/image/d510ec950f9a501094c11003381fcedc.jpg?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "NPR",
+    "description": "News and ideas from NPR-produced podcasts.",
+    "shows": [
+      {
+        "title": "Up First from NPR",
+        "author": "NPR",
+        "feed_url": "https://feeds.npr.org/510318/podcast.xml",
+        "artwork_urls": [
+          "https://npr.brightspotcdn.com/dims3/default/strip/false/crop/3000x3000+0+0/resize/1400/quality/66/format/jpg/?url=http%3A%2F%2Fnpr-brightspot.s3.amazonaws.com%2Fe0%2F7a%2Ffe9d16a44fbf9dd2d9932ffe799b%2F510318.png"
+        ]
+      },
+      {
+        "title": "Planet Money",
+        "author": "NPR",
+        "feed_url": "https://feeds.npr.org/510289/podcast.xml",
+        "artwork_urls": [
+          "https://media.npr.org/assets/img/2022/10/24/pm_new_tile_2022_sq-e543deddd0a46a98be481b46e6a72efa6b52236f.jpg?s=1400&c=66&f=jpg"
+        ]
+      },
+      {
+        "title": "Code Switch",
+        "author": "NPR",
+        "feed_url": "https://feeds.npr.org/510312/podcast.xml",
+        "artwork_urls": [
+          "https://media.npr.org/assets/img/2022/09/22/code-switch_tile_npr-network-01_sq-d238b5cbd3882f82ea3253c4facbe1f6fc9a78a1.jpg?s=1400&c=66&f=jpg"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "TED Audio Collective",
+    "description": "Ideas and conversations from the TED Audio Collective.",
+    "shows": [
+      {
+        "title": "TED Talks Daily",
+        "author": "TED",
+        "feed_url": "https://feeds.acast.com/public/shows/67587e77c705e441797aff96",
+        "artwork_urls": [
+          "https://assets.pippa.io/shows/67587e77c705e441797aff96/show-cover.png"
+        ]
+      },
+      {
+        "title": "How to Be a Better Human",
+        "author": "TED",
+        "feed_url": "https://feeds.acast.com/public/shows/67572b3b2dd88df13220eb3b",
+        "artwork_urls": [
+          "https://assets.pippa.io/shows/67572b3b2dd88df13220eb3b/show-cover.jpg"
+        ]
+      },
+      {
+        "title": "TED Radio Hour",
+        "author": "NPR",
+        "feed_url": "https://feeds.npr.org/510298/podcast.xml",
+        "artwork_urls": [
+          "https://media.npr.org/assets/img/2022/09/23/ted-radio-hour_tile_npr-network-01_sq-3ca507bd2dfa5c26d7db5b41c2b981b24a8789fa.jpg?s=1400&c=66&f=jpg"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "The Atlantic",
+    "description": "Reporting and conversations from The Atlantic.",
+    "shows": [
+      {
+        "title": "Radio Atlantic",
+        "author": "The Atlantic",
+        "feed_url": "https://feeds.megaphone.fm/radioatlantic",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/0de63462-667b-11e7-831d-4b9604c13c3c/image/RadioAtlantic_PRODUCT_3000x3000_KeyArt.jpg?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      },
+      {
+        "title": "The Permanent Questions With David Brooks",
+        "author": "The Atlantic",
+        "feed_url": "https://feeds.megaphone.fm/permanentquestions",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/5f11ba9e-9c06-11f1-b93b-c7f8604c3627/image/8d1a4db1312adb274470dcdc9d7cecea.png?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      },
+      {
+        "title": "Galaxy Brain",
+        "author": "The Atlantic",
+        "feed_url": "https://feeds.megaphone.fm/galaxybrain",
+        "artwork_urls": [
+          "https://megaphone.imgix.net/podcasts/46a7c6a0-b8cd-11f0-a3c2-67194f2aeb2d/image/03597646393790f6240c148697a2d0f0.jpg?ixlib=rails-4.3.1&max-w=3000&max-h=3000&fit=crop&auto=format,compress"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "The New York Times",
+    "description": "News and opinion from The New York Times. Some episodes require a subscription.",
+    "shows": [
+      {
+        "title": "The Daily",
+        "author": "The New York Times",
+        "feed_url": "https://feeds.simplecast.com/54nAGcIl",
+        "artwork_urls": [
+          "https://image.simplecastcdn.com/images/7f2f4c05-9c2f-4deb-82b7-b538062bc22d/73549bf1-94b3-40ff-8aeb-b4054848ec1b/3000x3000/the-daily-album-art-original.jpg?aid=rss_feed"
+        ]
+      },
+      {
+        "title": "The Opinions",
+        "author": "The New York Times Opinion",
+        "feed_url": "https://feeds.simplecast.com/kphrlDnb",
+        "artwork_urls": [
+          "https://image.simplecastcdn.com/images/4105a47a-42e5-4ccc-887a-832af7989986/5e7d73c4-60be-4164-b304-2166a9ae70b1/3000x3000/nyt-the-opinions-3000px.jpg?aid=rss_feed"
+        ]
+      },
+      {
+        "title": "The Ezra Klein Show",
+        "author": "New York Times Opinion",
+        "feed_url": "https://feeds.simplecast.com/kEKXbjuJ",
+        "artwork_urls": [
+          "https://image.simplecastcdn.com/images/47913775-afcf-4643-935f-31f1dcc86cfb/6a0e5e15-04a3-47c8-9c50-2f2fe8e84437/3000x3000/teks-album-20art-3000px.jpg?aid=rss_feed"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "The Economist",
+    "description": "A public selection from The Economist. Full access may require a subscription.",
+    "shows": [
+      {
+        "title": "The Intelligence from The Economist",
+        "author": "The Economist",
+        "feed_url": "https://feeds.acast.com/public/shows/theintelligencepodcast",
+        "artwork_urls": [
+          "https://assets.pippa.io/shows/62e286a934d4d93d6587424a/1784634926736-00c7d25b-3e89-4367-a4e1-f7a47693dbeb.jpeg"
+        ]
+      }
+    ]
+  }
+]
