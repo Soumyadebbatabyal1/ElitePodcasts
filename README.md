@@ -6,7 +6,7 @@ Elite Podcasts is a native GTK4 and libadwaita podcast application for GNOME. Se
 
 - Rust stable and Cargo (Rust 1.78 or newer)
 - GTK 4.8 or newer development files
-- libadwaita development files (1.5 or newer)
+- libadwaita development files (1.7 or newer)
 - GStreamer runtime plugins and development files
 - A C compiler and `pkg-config`
 
@@ -20,7 +20,7 @@ cargo run
 
 Cargo downloads the Rust crates on the first build. Close any older Elite Podcasts window before launching a newly built version; the application ID allows only one running instance.
 
-Select the search button, type a podcast name, and press Enter. Search uses Apple's public podcast directory and needs no API key. Category tiles show podcasts from Apple's US category charts; the Climate tile uses the Earth Sciences chart. Chart entries are looked up in the directory to obtain public RSS URLs, so shows without one are omitted. Search and category results are cached for 30 minutes, with saved results used if the service is unavailable. Network requests run in worker threads.
+Select the search button, type a podcast name, and press Enter. Search uses Apple's public podcast directory and needs no API key. Category tiles open a podcast list with native libadwaita tabs for All and the available subcategories. Each tab loads its list when first selected and keeps it ready while you browse that category. Climate offers Earth Sciences and Nature because Apple does not have a separate Climate category. Chart entries are looked up in the directory to obtain public RSS URLs, so shows without one are omitted. Search and category results are cached for 30 minutes, with saved results used if the service is unavailable. Network requests run in worker threads.
 
 Search and category results use native Adwaita boxed lists with artwork, show and publisher names, and an available date above the title. Dates use the local day: Today, Yesterday, day and month, or a year when needed. Exact title matches appear first. A search briefly outlines its first result in the accent color. Select a row to see a podcast cover, description, and up to 20 recent episodes from its public RSS feed. Use Add to follow a show; the button becomes green and says Added. The Following page displays a responsive cover grid, and its covers open the podcast page. The podcast page shortens long descriptions with an inline More link that opens a native dialog. Beneath it, the headphones button and podcast menu can mark the loaded episodes as played, and the circled tick unsubscribes. The podcast menu can also open the show's website.
 
@@ -36,7 +36,7 @@ Import Shows (Ctrl+O) reads podcast RSS subscriptions from an OPML file, skips d
 
 The 10-second skip and speedometer symbolic icons in `assets/icons/` come from [GNOME Audio Player (Decibels)](https://gitlab.gnome.org/GNOME/decibels), licensed under GPL-3.0. They are bundled as application resources so GTK can recolor them with the active theme.
 
-Images are loaded by four background workers, with alternate artwork URLs tried only when the preferred one fails. Text and controls appear without waiting for artwork. Images use a bounded in-memory cache and a persistent disk cache under the standard user cache directory, with a symbolic placeholder while loading or when unavailable. RSS feed data is also cached: fresh cached feeds load immediately for 15 minutes, and older cached feeds load immediately while a background refresh updates the cache. RSS feeds are limited to 32 MB; larger feeds show an explicit size error.
+Images are loaded and decoded by four background workers, with alternate artwork URLs tried only when the preferred one fails. Text and controls appear without waiting for artwork. Decoded images become shared GTK textures, so opening another page does not resize each cover again. Images use a bounded in-memory cache and a persistent disk cache under the standard user cache directory, with a symbolic placeholder while loading or when unavailable. RSS feed data is also cached: fresh cached feeds load immediately for 15 minutes, and older cached feeds load immediately while a background refresh updates the cache. RSS feeds are limited to 32 MB; larger feeds show an explicit size error.
 
 Search and category browsing need an internet connection on their first request. No API credentials are required.
 
@@ -44,7 +44,7 @@ Search and category browsing need an internet connection on their first request.
 
 - `src/app.rs` starts the libadwaita application and creates its window.
 - `src/ui/` contains the adaptive sidebar, page header, discovery views, New Episodes page, shared episode rows and dialog, Queue and History panel, nine-category grid, and artwork loader.
-- `src/data.rs` defines the category tiles.
+- `src/data.rs` defines the category tiles and subcategory genre IDs.
 - `src/discovery_service.rs` searches Apple's public podcast directory, loads category charts, and reads public RSS feeds.
 - `src/cache.rs` stores fetched directory responses, RSS details, the New Episodes snapshot, and artwork in the user cache directory.
 - `src/following.rs` saves followed podcasts in SQLite under the standard user data directory.

@@ -1,21 +1,16 @@
 use adw::prelude::*;
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use super::artwork::ArtworkLoader;
 use super::episode::{plain_description, show_dialog as show_episode_dialog};
-use crate::data::CATEGORIES;
+use crate::data::{self, CATEGORIES};
 use crate::discovery_service::{self, Episode, FeedDetails, Show};
 use crate::following::FollowingStore;
 use crate::playback::PlaybackController;
-
-#[derive(Clone)]
-enum Request {
-    Search(String),
-    Category(String),
-}
 
 pub(super) struct DiscoveryPage {
     pub widget: gtk::Widget,
@@ -57,6 +52,10 @@ pub(super) fn page(
         .child(&results_clamp)
         .build();
     view.add_named(&results_scroller, Some("results"));
+
+    let category_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    category_content.set_vexpand(true);
+    view.add_named(&category_content, Some("category"));
 
     let feed_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
     feed_content.set_margin_top(28);
@@ -235,7 +234,11 @@ pub(super) fn page(
     view.add_named(&feed_state, Some("feed"));
 
     let generation = Rc::new(Cell::new(0u64));
+    let category_generation = Rc::new(Cell::new(0u64));
+    let category_loading = Rc::new(Cell::new(false));
     let result_title = Rc::new(RefCell::new(String::from("Search results")));
+    let current_category = Rc::new(RefCell::new(None::<String>));
+    let feed_from_category = Rc::new(Cell::new(false));
     let view_for_back = view.clone();
     let generation_for_back = generation.clone();
     let status_for_back = status.clone();
@@ -243,6 +246,10 @@ pub(super) fn page(
     let back_for_click = back.clone();
     let menu_for_back = menu.clone();
     let origin_for_back = origin_following.clone();
+    let category_for_back = current_category.clone();
+    let feed_category_for_back = feed_from_category.clone();
+    let category_loading_for_back = category_loading.clone();
+    let category_generation_for_back = category_generation.clone();
     back.connect_clicked(move |_| {
         generation_for_back.set(generation_for_back.get().wrapping_add(1));
         view_for_back.set_transition_type(gtk::StackTransitionType::SlideRight);
@@ -251,12 +258,27 @@ pub(super) fn page(
             if origin_for_back.replace(false) {
                 back_for_click.set_visible(false);
                 back_to_following();
+            } else if feed_category_for_back.replace(false) {
+                view_for_back.set_visible_child_name("category");
+                if let Some(category) = category_for_back.borrow().as_deref() {
+                    status_for_back(category, category_loading_for_back.get());
+                }
+                back_for_click.set_tooltip_text(Some("Back to Discover"));
             } else {
                 view_for_back.set_visible_child_name("results");
                 status_for_back(&result_title_for_back.borrow(), false);
                 back_for_click.set_tooltip_text(Some("Back to Discover"));
             }
+        } else if view_for_back.visible_child_name().as_deref() == Some("results")
+            && category_for_back.borrow().is_some()
+        {
+            view_for_back.set_visible_child_name("category");
+            if let Some(category) = category_for_back.borrow().as_deref() {
+                status_for_back(category, category_loading_for_back.get());
+            }
         } else {
+            category_generation_for_back.set(category_generation_for_back.get().wrapping_add(1));
+            category_loading_for_back.set(false);
             view_for_back.set_visible_child_name("home");
             status_for_back("Discover", false);
             back_for_click.set_visible(false);
@@ -288,7 +310,9 @@ pub(super) fn page(
         let website_action = website_action.clone();
         let unsubscribe_action = unsubscribe_action.clone();
         let store = store.clone();
+        let feed_from_category = feed_from_category.clone();
         Rc::new(move |show, animate: bool| {
+            feed_from_category.set(false);
             status(&show.title, false);
             *website.borrow_mut() = None;
             *selected_show.borrow_mut() = Some(show.clone());
@@ -457,10 +481,14 @@ pub(super) fn page(
             open_feed(show, false);
         })
     };
-    let request: Rc<dyn Fn(Request)> = {
+    let request_search: Rc<dyn Fn(String)> = {
         let view = view.clone();
         let outer_pages = outer_pages.clone();
+        let results_scroller = results_scroller.clone();
         let listing = listing.clone();
+        let current_category = current_category.clone();
+        let category_generation = category_generation.clone();
+        let category_loading = category_loading.clone();
         let generation = generation.clone();
         let open_feed = open_feed.clone();
         let artwork = artwork.clone();
@@ -470,18 +498,22 @@ pub(super) fn page(
         let menu = menu.clone();
         let store = store.clone();
         let toast = toast.clone();
-        Rc::new(move |request| {
-            let cue_first = matches!(&request, Request::Search(_));
-            let title = match &request {
-                Request::Search(_) => "Search results".to_string(),
-                Request::Category(name) => name.clone(),
-            };
+        Rc::new(move |term| {
+            category_generation.set(category_generation.get().wrapping_add(1));
+            category_loading.set(false);
+            let title = "Search results".to_string();
+            *current_category.borrow_mut() = None;
             *result_title.borrow_mut() = title.clone();
             status(&title, false);
             menu.set_visible(false);
             clear(&listing);
             listing.set_visible(false);
-            view.set_transition_type(if view.is_mapped() {
+            if view.visible_child_name().as_deref() != Some("results") {
+                results_scroller.vadjustment().set_value(0.0);
+            }
+            view.set_transition_type(if view.visible_child_name().as_deref() == Some("results") {
+                gtk::StackTransitionType::None
+            } else if view.is_mapped() {
                 gtk::StackTransitionType::SlideLeft
             } else {
                 gtk::StackTransitionType::None
@@ -494,11 +526,7 @@ pub(super) fn page(
             generation.set(id);
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
-                let answer = match request {
-                    Request::Search(term) => discovery_service::search(&term),
-                    Request::Category(name) => discovery_service::category(&name),
-                };
-                let _ = tx.send(answer);
+                let _ = tx.send(discovery_service::search(&term));
             });
             let listing = listing.clone();
             let generation = generation.clone();
@@ -522,7 +550,7 @@ pub(super) fn page(
                         match answer {
                             Ok(shows) => {
                                 clear(&listing);
-                                show_results(&listing, shows, open_feed.clone(), &artwork, cue_first, &store, toast.clone());
+                                show_results(&listing, shows, open_feed.clone(), &artwork, true, &store, toast.clone());
                                 listing.set_visible(true);
                                 status(&title, false);
                             }
@@ -553,6 +581,158 @@ pub(super) fn page(
         })
     };
 
+    let open_category: Rc<dyn Fn(String)> = {
+        let view = view.clone();
+        let outer_pages = outer_pages.clone();
+        let category_content = category_content.clone();
+        let current_category = current_category.clone();
+        let generation = generation.clone();
+        let category_generation = category_generation.clone();
+        let category_loading = category_loading.clone();
+        let open_feed = open_feed.clone();
+        let feed_from_category = feed_from_category.clone();
+        let artwork = artwork.clone();
+        let status = status.clone();
+        let back = back.clone();
+        let menu = menu.clone();
+        let store = store.clone();
+        let toast = toast.clone();
+        Rc::new(move |parent| {
+            generation.set(generation.get().wrapping_add(1));
+            *current_category.borrow_mut() = Some(parent.clone());
+            status(&parent, false);
+            menu.set_visible(false);
+            clear(&category_content);
+            let (tabs, stack, listings, first) = category_tabs(&parent);
+            category_content.append(&tabs);
+            view.set_transition_type(if view.is_mapped() {
+                gtk::StackTransitionType::SlideLeft
+            } else {
+                gtk::StackTransitionType::None
+            });
+            view.set_visible_child_name("category");
+            back.set_visible(true);
+            back.set_tooltip_text(Some("Back to Discover"));
+
+            let id = category_generation.get().wrapping_add(1);
+            category_generation.set(id);
+            let started = Rc::new(RefCell::new(HashSet::<String>::new()));
+            let ready = Rc::new(RefCell::new(HashSet::<String>::new()));
+            let listings = Rc::new(listings.into_iter()
+                .map(|(name, listing)| (name, listing.downgrade()))
+                .collect::<HashMap<_, _>>());
+            let load_tab: Rc<dyn Fn(String)> = {
+                let stack = stack.downgrade();
+                let view = view.clone();
+                let outer_pages = outer_pages.clone();
+                let category_generation = category_generation.clone();
+                let category_loading = category_loading.clone();
+                let open_feed = open_feed.clone();
+                let feed_from_category = feed_from_category.clone();
+                let artwork = artwork.clone();
+                let status = status.clone();
+                let store = store.clone();
+                let toast = toast.clone();
+                let parent = parent.clone();
+                Rc::new(move |selected| {
+                    let Some(stack) = stack.upgrade() else { return };
+                    if ready.borrow().contains(&selected) {
+                        category_loading.set(false);
+                        status(&parent, false);
+                        return;
+                    }
+                    category_loading.set(true);
+                    status(&parent, true);
+                    if !started.borrow_mut().insert(selected.clone()) {
+                        return;
+                    }
+                    let (tx, rx) = mpsc::channel();
+                    let parent_for_worker = parent.clone();
+                    let selected_for_worker = selected.clone();
+                    std::thread::spawn(move || {
+                        let answer = discovery_service::category(&parent_for_worker, &selected_for_worker);
+                        let _ = tx.send(answer);
+                    });
+                    let stack = stack.downgrade();
+                    let view = view.clone();
+                    let outer_pages = outer_pages.clone();
+                    let category_generation = category_generation.clone();
+                    let category_loading = category_loading.clone();
+                    let open_feed = open_feed.clone();
+                    let feed_from_category = feed_from_category.clone();
+                    let artwork = artwork.clone();
+                    let status = status.clone();
+                    let store = store.clone();
+                    let toast = toast.clone();
+                    let listings = listings.clone();
+                    let ready = ready.clone();
+                    let parent = parent.clone();
+                    gtk::glib::timeout_add_local(Duration::from_millis(16), move || {
+                        if category_generation.get() != id {
+                            return gtk::glib::ControlFlow::Break;
+                        }
+                        if view.is_transition_running() || outer_pages.is_transition_running() {
+                            return gtk::glib::ControlFlow::Continue;
+                        }
+                        let answer = match rx.try_recv() {
+                            Ok(answer) => answer,
+                            Err(mpsc::TryRecvError::Empty) => return gtk::glib::ControlFlow::Continue,
+                            Err(mpsc::TryRecvError::Disconnected) =>
+                                Err("The request ended unexpectedly.".to_string()),
+                        };
+                        if let Some(listing) = listings.get(&selected).and_then(|listing| listing.upgrade()) {
+                            clear(&listing);
+                            match answer {
+                                Ok(shows) => {
+                                    let open_feed = open_feed.clone();
+                                    let feed_from_category = feed_from_category.clone();
+                                    let open_from_category: Rc<dyn Fn(Show, bool)> = Rc::new(move |show, animate| {
+                                        open_feed(show, animate);
+                                        feed_from_category.set(true);
+                                    });
+                                    show_results(&listing, shows, open_from_category, &artwork, false, &store, toast.clone());
+                                }
+                                Err(message) => show_message(&listing, "Could not load podcasts", &message),
+                            }
+                        }
+                        ready.borrow_mut().insert(selected.clone());
+                        if stack.upgrade().is_some_and(|stack| stack.visible_child_name().as_deref() == Some(selected.as_str()))
+                            && view.visible_child_name().as_deref() == Some("category")
+                        {
+                            category_loading.set(false);
+                            status(&parent, false);
+                        }
+                        gtk::glib::ControlFlow::Break
+                    });
+                })
+            };
+            let load_on_switch = load_tab.clone();
+            stack.connect_visible_child_name_notify(move |stack| {
+                if let Some(selected) = stack.visible_child_name() {
+                    load_on_switch(selected.to_string());
+                }
+            });
+            if let Some(first) = first {
+                let view = view.clone();
+                let outer_pages = outer_pages.clone();
+                let category_generation = category_generation.clone();
+                let stack = stack.downgrade();
+                gtk::glib::timeout_add_local(Duration::from_millis(16), move || {
+                    if category_generation.get() != id {
+                        return gtk::glib::ControlFlow::Break;
+                    }
+                    if view.is_transition_running() || outer_pages.is_transition_running() {
+                        return gtk::glib::ControlFlow::Continue;
+                    }
+                    if stack.upgrade().is_some_and(|stack| stack.visible_child_name().as_deref() == Some(first.as_str())) {
+                        load_tab(first.clone());
+                    }
+                    gtk::glib::ControlFlow::Break
+                });
+            }
+        })
+    };
+
     let home = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
@@ -560,7 +740,7 @@ pub(super) fn page(
     let content = gtk::Box::new(gtk::Orientation::Vertical, 30);
     content.set_margin_top(16);
     content.set_margin_bottom(24);
-    content.append(&categories(request.clone()));
+    content.append(&categories(open_category));
 
     let clamp = adw::Clamp::builder().maximum_size(800).build();
     clamp.set_margin_start(16);
@@ -570,11 +750,11 @@ pub(super) fn page(
     view.add_named(&home, Some("home"));
     view.set_visible_child_name("home");
 
-    let search_request = request.clone();
+    let search_request = request_search.clone();
     entry.connect_activate(move |entry| {
         let term = entry.text().trim().to_string();
         if !term.is_empty() {
-            search_request(Request::Search(term));
+            search_request(term);
         }
     });
     let view_for_clear = view.clone();
@@ -600,8 +780,14 @@ pub(super) fn page(
     let reset_back = back.clone();
     let reset_menu = menu.clone();
     let reset_origin = origin_following.clone();
+    let reset_category_generation = category_generation.clone();
+    let reset_category_loading = category_loading.clone();
+    let reset_current_category = current_category.clone();
     let reset: Rc<dyn Fn()> = Rc::new(move || {
         reset_generation.set(reset_generation.get().wrapping_add(1));
+        reset_category_generation.set(reset_category_generation.get().wrapping_add(1));
+        reset_category_loading.set(false);
+        *reset_current_category.borrow_mut() = None;
         reset_view.set_transition_type(if reset_view.is_mapped() {
             gtk::StackTransitionType::SlideRight
         } else {
@@ -636,6 +822,52 @@ fn show_message(container: &gtk::Box, title: &str, message: &str) {
     detail.add_css_class("dim-label");
     content.append(&detail);
     container.append(&content);
+}
+
+fn category_tabs(parent: &str) -> (gtk::Box, adw::ViewStack, HashMap<String, gtk::Box>, Option<String>) {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.set_vexpand(true);
+    let stack = adw::ViewStack::new();
+    stack.set_vexpand(true);
+    let switcher = adw::InlineViewSwitcher::new();
+    switcher.set_stack(Some(&stack));
+    switcher.set_can_shrink(true);
+    switcher.set_display_mode(adw::InlineViewSwitcherDisplayMode::Labels);
+    let tab_scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_height(48)
+        .child(&switcher)
+        .build();
+    tab_scroller.set_margin_start(16);
+    tab_scroller.set_margin_end(16);
+    content.append(&tab_scroller);
+
+    let mut options = Vec::new();
+    if parent != "Climate" {
+        options.push(("All", parent));
+    }
+    options.extend(data::subcategories(parent).iter().map(|(name, _)| (*name, *name)));
+    let first = options.first().map(|(_, selected)| (*selected).to_string());
+    let mut listings = HashMap::new();
+    for (label, selected) in options {
+        let listing = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        listing.set_margin_top(16);
+        listing.set_margin_bottom(24);
+        let clamp = adw::Clamp::builder().maximum_size(620).build();
+        clamp.set_margin_start(16);
+        clamp.set_margin_end(16);
+        clamp.set_child(Some(&listing));
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&clamp)
+            .build();
+        stack.add_titled(&scroller, Some(selected), label);
+        listings.insert(selected.to_string(), listing);
+    }
+    content.append(&stack);
+    (content, stack, listings, first)
 }
 
 fn show_results(
@@ -958,7 +1190,7 @@ fn show_feed(
     episodes.append(&list);
 }
 
-fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
+fn categories(open_category: Rc<dyn Fn(String)>) -> gtk::Widget {
     let flow = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .max_children_per_line(3)
@@ -998,9 +1230,9 @@ fn categories(request: Rc<dyn Fn(Request)>) -> gtk::Widget {
         layout.add_overlay(&label);
 
         tile.set_child(Some(&layout));
-        let request = request.clone();
+        let open_category = open_category.clone();
         let category = (*name).to_string();
-        tile.connect_clicked(move |_| request(Request::Category(category.clone())));
+        tile.connect_clicked(move |_| open_category(category.clone()));
         flow.insert(&tile, -1);
     }
 

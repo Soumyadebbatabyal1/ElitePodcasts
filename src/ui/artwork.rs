@@ -12,17 +12,24 @@ use crate::discovery_service::USER_AGENT;
 const MAX_IMAGE_BYTES: u64 = 3 * 1024 * 1024;
 const MAX_CACHED_IMAGES: usize = 128;
 
+struct DecodedImage {
+    pixels: Vec<u8>,
+    width: i32,
+    height: i32,
+    rowstride: i32,
+    has_alpha: bool,
+}
+
 struct ArtworkBinding {
     picture: gtk::glib::WeakRef<gtk::Picture>,
     candidates: Vec<String>,
-    size: i32,
     displayed_url: Option<String>,
 }
 
 pub struct ArtworkLoader {
     jobs: mpsc::Sender<String>,
     pending: RefCell<HashSet<String>>,
-    cache: RefCell<HashMap<String, gtk::gdk_pixbuf::Pixbuf>>,
+    cache: RefCell<HashMap<String, gtk::gdk::Texture>>,
     failed: RefCell<HashSet<String>>,
     bindings: RefCell<Vec<ArtworkBinding>>,
 }
@@ -31,7 +38,7 @@ impl ArtworkLoader {
     pub fn new() -> Rc<Self> {
         let (jobs_tx, jobs_rx) = mpsc::channel::<String>();
         let jobs_rx = Arc::new(Mutex::new(jobs_rx));
-        let (done_tx, done_rx) = mpsc::channel::<(String, Option<Vec<u8>>)>();
+        let (done_tx, done_rx) = mpsc::channel::<(String, Option<DecodedImage>)>();
         for _ in 0..4 {
             let jobs_rx = jobs_rx.clone();
             let done_tx = done_tx.clone();
@@ -39,8 +46,8 @@ impl ArtworkLoader {
                 loop {
                     let job = jobs_rx.lock().expect("artwork queue mutex poisoned").recv();
                     let Ok(url) = job else { break };
-                    let bytes = fetch(&url);
-                    if done_tx.send((url, bytes)).is_err() {
+                    let decoded = fetch(&url).and_then(|bytes| decode(&bytes));
+                    if done_tx.send((url, decoded)).is_err() {
                         break;
                     }
                 }
@@ -60,16 +67,27 @@ impl ArtworkLoader {
             };
             let mut changed = false;
             for _ in 0..4 {
-                let Ok((url, bytes)) = done_rx.try_recv() else { break };
+                let Ok((url, decoded)) = done_rx.try_recv() else { break };
                 loader.pending.borrow_mut().remove(&url);
-                if let Some(pixbuf) = bytes.and_then(|bytes| decode(&bytes)) {
+                if let Some(decoded) = decoded {
+                    let pixels = gtk::glib::Bytes::from_owned(decoded.pixels);
+                    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
+                        &pixels,
+                        gtk::gdk_pixbuf::Colorspace::Rgb,
+                        decoded.has_alpha,
+                        8,
+                        decoded.width,
+                        decoded.height,
+                        decoded.rowstride,
+                    );
+                    let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
                     let mut cache = loader.cache.borrow_mut();
                     if cache.len() >= MAX_CACHED_IMAGES {
                         if let Some(old_url) = cache.keys().next().cloned() {
                             cache.remove(&old_url);
                         }
                     }
-                    cache.insert(url, pixbuf);
+                    cache.insert(url, texture);
                 } else {
                     loader.failed.borrow_mut().insert(url);
                 }
@@ -87,14 +105,13 @@ impl ArtworkLoader {
         let (widget, picture) = self.make_widget(size);
         let mut displayed_url = None;
         self.advance(candidates);
-        if let Some((url, pixbuf)) = self.best_pixbuf(candidates) {
-            set_picture_pixbuf(&picture, &pixbuf, size);
+        if let Some((url, texture)) = self.best_texture(candidates) {
+            picture.set_paintable(Some(&texture));
             displayed_url = Some(url);
         }
         self.bindings.borrow_mut().push(ArtworkBinding {
             picture: picture.downgrade(),
             candidates: candidates.to_vec(),
-            size,
             displayed_url,
         });
         widget
@@ -122,7 +139,7 @@ impl ArtworkLoader {
         (overlay.upcast(), picture)
     }
 
-    fn best_pixbuf(&self, candidates: &[String]) -> Option<(String, gtk::gdk_pixbuf::Pixbuf)> {
+    fn best_texture(&self, candidates: &[String]) -> Option<(String, gtk::gdk::Texture)> {
         let cache = self.cache.borrow();
         candidates.iter()
             .find_map(|url| cache.get(url).map(|pixbuf| (url, pixbuf)))
@@ -134,9 +151,9 @@ impl ArtworkLoader {
         for binding in self.bindings.borrow_mut().iter_mut() {
             if let Some(picture) = binding.picture.upgrade() {
                 self.advance(&binding.candidates);
-                if let Some((url, pixbuf)) = self.best_pixbuf(&binding.candidates) {
+                if let Some((url, texture)) = self.best_texture(&binding.candidates) {
                     if binding.displayed_url.as_deref() != Some(&url) {
-                        set_picture_pixbuf(&picture, &pixbuf, binding.size);
+                        picture.set_paintable(Some(&texture));
                         binding.displayed_url = Some(url);
                     }
                 }
@@ -208,30 +225,12 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     }
 }
 
-fn set_picture_pixbuf(picture: &gtk::Picture, original: &gtk::gdk_pixbuf::Pixbuf, size: i32) {
-    let target = size.saturating_mul(picture.scale_factor().max(1));
-    let largest = original.width().max(original.height());
-    let pixbuf = if largest > target {
-        let scale = f64::from(target) / f64::from(largest);
-        original
-            .scale_simple(
-                (f64::from(original.width()) * scale).round().max(1.0) as i32,
-                (f64::from(original.height()) * scale).round().max(1.0) as i32,
-                gtk::gdk_pixbuf::InterpType::Hyper,
-            )
-            .unwrap_or_else(|| original.clone())
-    } else {
-        original.clone()
-    };
-    picture.set_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
-}
-
-fn decode(bytes: &[u8]) -> Option<gtk::gdk_pixbuf::Pixbuf> {
+fn decode(bytes: &[u8]) -> Option<DecodedImage> {
     let loader = gtk::gdk_pixbuf::PixbufLoader::new();
     loader.connect_size_prepared(|loader, width, height| {
         let largest = width.max(height);
-        if largest > 1024 {
-            let scale = 1024.0 / f64::from(largest);
+        if largest > 512 {
+            let scale = 512.0 / f64::from(largest);
             loader.set_size(
                 (f64::from(width) * scale).round().max(1.0) as i32,
                 (f64::from(height) * scale).round().max(1.0) as i32,
@@ -240,5 +239,12 @@ fn decode(bytes: &[u8]) -> Option<gtk::gdk_pixbuf::Pixbuf> {
     });
     loader.write(bytes).ok()?;
     loader.close().ok()?;
-    loader.pixbuf()
+    let pixbuf = loader.pixbuf()?;
+    Some(DecodedImage {
+        pixels: pixbuf.read_pixel_bytes().as_ref().to_vec(),
+        width: pixbuf.width(),
+        height: pixbuf.height(),
+        rowstride: pixbuf.rowstride(),
+        has_alpha: pixbuf.has_alpha(),
+    })
 }

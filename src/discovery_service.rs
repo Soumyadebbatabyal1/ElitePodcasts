@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
 use crate::cache;
+use crate::data;
 
 const DIRECTORY_URL: &str = "https://itunes.apple.com/search";
 const LOOKUP_URL: &str = "https://itunes.apple.com/lookup";
@@ -178,19 +179,9 @@ fn artwork_candidates(urls: impl IntoIterator<Item = Option<String>>) -> Vec<Str
     candidates
 }
 
-pub fn category(name: &str) -> Result<Vec<Show>, String> {
-    let genre = match name {
-        "Arts" => 1301,
-        "Science" => 1533,
-        "News" => 1489,
-        "Education" => 1304,
-        "Society & Culture" => 1324,
-        "Sports" => 1545,
-        "Health" => 1512,
-        "Climate" => 1540, // Apple's Earth Sciences category.
-        "Business" => 1321,
-        _ => return Err("This category is unavailable.".into()),
-    };
+pub fn category(parent: &str, selected: &str) -> Result<Vec<Show>, String> {
+    let genre = data::category_genre(parent, selected)
+        .ok_or_else(|| "This category is unavailable.".to_string())?;
     let cache_key = genre.to_string();
     if let Some(cached) = cache::read_json("apple-chart-category-v1", &cache_key, Some(DIRECTORY_CACHE_AGE)) {
         return Ok(cached);
