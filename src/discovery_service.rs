@@ -10,8 +10,9 @@ const LOOKUP_URL: &str = "https://itunes.apple.com/lookup";
 const MAX_FEED_BYTES: u64 = 32 * 1024 * 1024;
 const DIRECTORY_CACHE_AGE: Duration = Duration::from_secs(30 * 60);
 const FEED_CACHE_AGE: Duration = Duration::from_secs(15 * 60);
-const FEED_CACHE_KIND: &str = "feeds-v2";
-const OLD_FEED_CACHE_KIND: &str = "feeds-v1";
+const FEED_CACHE_KIND: &str = "feeds-v4";
+const OLD_FEED_CACHE_KIND: &str = "feeds-v3";
+const OLDEST_FEED_CACHE_KIND: &str = "feeds-v2";
 pub(crate) const USER_AGENT: &str = "ElitePodcasts/0.1 (io.github.elite.Podcasts; native GNOME podcast app)";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +43,12 @@ pub struct FeedDetails {
     pub artwork_url: Option<String>,
     pub all_episode_ids: Vec<String>,
     pub episodes: Vec<Episode>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub copyright: Option<String>,
+    #[serde(default)]
+    pub last_updated: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -240,12 +247,21 @@ pub fn feed(url: &str) -> Result<FeedDetails, String> {
         });
         return Ok(cached);
     }
-    feed_fresh(url).or_else(|error| cache::read_json(OLD_FEED_CACHE_KIND, url, None).ok_or(error))
+    feed_fresh(url).or_else(|error| {
+        cache::read_json(OLD_FEED_CACHE_KIND, url, None)
+            .or_else(|| cache::read_json(OLDEST_FEED_CACHE_KIND, url, None))
+            .ok_or(error)
+    })
 }
 
 pub fn cached_feed(url: &str) -> Option<FeedDetails> {
     cache::read_json(FEED_CACHE_KIND, url, None)
         .or_else(|| cache::read_json(OLD_FEED_CACHE_KIND, url, None))
+        .or_else(|| cache::read_json(OLDEST_FEED_CACHE_KIND, url, None))
+}
+
+pub fn cached_feed_current(url: &str) -> Option<FeedDetails> {
+    cache::read_json(FEED_CACHE_KIND, url, None)
 }
 
 pub fn feed_fresh(url: &str) -> Result<FeedDetails, String> {
@@ -333,23 +349,34 @@ fn fetch_feed(url: &str) -> Result<FeedDetails, String> {
         .filter(|episode| !episode.title.is_empty())
         .collect();
     let all_episode_ids = all_episodes.iter().map(|episode| episode.id.clone()).collect();
+    let last_updated = all_episodes.iter()
+        .find(|episode| !episode.date.is_empty())
+        .map(|episode| episode.date.clone());
     let episodes = all_episodes.into_iter().take(20).collect();
-    let artwork_url = channel
-        .children()
-        .find_map(|node| {
-            if node.is_element() && node.tag_name().name() == "image" {
-                node.attribute("href")
-                    .map(str::to_string)
-                    .or_else(|| {
-                        node.children()
-                            .find(|child| child.has_tag_name("url"))
-                            .and_then(|child| child.text())
-                            .map(str::to_string)
-                    })
-            } else {
-                None
+    let mut categories = Vec::new();
+    for category in channel.children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "category")
+        .flat_map(|node| node.descendants())
+        .filter(|node| node.is_element() && node.tag_name().name() == "category"
+            && node.tag_name().namespace() == Some("http://www.itunes.com/dtds/podcast-1.0.dtd")) {
+        if let Some(name) = category.attribute("text").map(str::trim).filter(|name| !name.is_empty()) {
+            if !categories.iter().any(|existing| existing == name) {
+                categories.push(name.to_string());
             }
-        });
+        }
+    }
+    let image_url = |node: roxmltree::Node<'_, '_>| {
+        node.attribute("href")
+            .or_else(|| node.children().find(|child| child.has_tag_name("url")).and_then(|child| child.text()))
+            .map(str::trim)
+            .filter(|url| usable_feed_url(url))
+            .map(str::to_string)
+    };
+    let images = || channel.children().filter(|node| node.is_element() && node.tag_name().name() == "image");
+    let artwork_url = images()
+        .filter(|node| node.tag_name().namespace() == Some("http://www.itunes.com/dtds/podcast-1.0.dtd"))
+        .find_map(image_url)
+        .or_else(|| images().find_map(image_url));
     Ok(FeedDetails {
         title: field(channel, "title"),
         description: field(channel, "description"),
@@ -357,6 +384,9 @@ fn fetch_feed(url: &str) -> Result<FeedDetails, String> {
         artwork_url,
         all_episode_ids,
         episodes,
+        categories,
+        copyright: Some(field(channel, "copyright")).filter(|value| !value.is_empty()),
+        last_updated,
     })
 }
 

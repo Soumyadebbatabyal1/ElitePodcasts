@@ -91,10 +91,32 @@
   background: alpha(currentColor, 0.08);
 }
 
-.latest-episode-button {
+.podcast-follow-button {
   min-height: 40px;
   padding: 0 14px;
   border-radius: 999px;
+  background: alpha(currentColor, 0.08);
+  color: inherit;
+  border: none;
+}
+
+.podcast-follow-button:hover {
+  background: alpha(currentColor, 0.14);
+}
+
+.podcast-follow-button.podcast-following,
+.podcast-follow-button.podcast-following:hover {
+  background: #1ce783;
+  color: #101b15;
+}
+
+.podcast-metadata {
+  font-size: 0.9em;
+  color: alpha(currentColor, 0.7);
+}
+
+.episode-played-icon {
+  color: alpha(currentColor, 0.7);
 }
 
 .podcast-round-action {

@@ -1,8 +1,11 @@
 use adw::prelude::*;
+use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use super::artwork::ArtworkLoader;
-use crate::discovery_service::Show;
+use crate::discovery_service::{self, Show};
 use crate::following::FollowingStore;
 
 pub(super) fn page(
@@ -71,7 +74,7 @@ pub(super) fn page(
             tile.add_css_class("following-cover");
             tile.set_halign(gtk::Align::Center);
             tile.set_tooltip_text(Some(&show.title));
-            tile.set_child(Some(&artwork.cached_widget(&show.artwork_urls, 140)));
+            tile.set_child(Some(&artwork.large_cover_widget(&show.artwork_urls, 140)));
             let open_show = open_show.clone();
             tile.connect_clicked(move |_| open_show(show.clone()));
             grid.insert(&tile, -1);
@@ -81,7 +84,54 @@ pub(super) fn page(
     render();
     let weak = content.downgrade();
     store_watch(&render, &weak, &store);
+    let artwork_refresh_started = Cell::new(false);
+    content.connect_map(move |content| {
+        if !artwork_refresh_started.replace(true) {
+            refresh_saved_artwork(store.clone(), content);
+        }
+    });
     scroller.upcast()
+}
+
+fn refresh_saved_artwork(store: Rc<FollowingStore>, content: &gtk::Box) {
+    let Ok(shows) = store.list() else { return };
+    if shows.is_empty() { return }
+    let (tx, rx) = mpsc::channel::<Vec<(String, String)>>();
+    std::thread::spawn(move || {
+        let mut missing = Vec::new();
+        let mut cached = Vec::new();
+        for show in shows {
+            if let Some(feed) = discovery_service::cached_feed_current(&show.feed_url) {
+                if let Some(url) = feed.artwork_url {
+                    cached.push((show.feed_url, url));
+                }
+            } else {
+                missing.push(show.feed_url);
+            }
+        }
+        if !cached.is_empty() && tx.send(cached).is_err() { return }
+        let mut fetched = Vec::new();
+        for feed_url in missing {
+            if let Ok(feed) = discovery_service::feed_fresh(&feed_url) {
+                if let Some(url) = feed.artwork_url {
+                    fetched.push((feed_url, url));
+                }
+            }
+            if fetched.len() >= 3 && tx.send(std::mem::take(&mut fetched)).is_err() { return }
+        }
+        if !fetched.is_empty() { let _ = tx.send(fetched); }
+    });
+    let content = content.downgrade();
+    gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
+        if content.upgrade().is_none() { return gtk::glib::ControlFlow::Break }
+        loop {
+            match rx.try_recv() {
+                Ok(covers) => { let _ = store.prefer_feed_artworks(&covers); }
+                Err(mpsc::TryRecvError::Empty) => return gtk::glib::ControlFlow::Continue,
+                Err(mpsc::TryRecvError::Disconnected) => return gtk::glib::ControlFlow::Break,
+            }
+        }
+    });
 }
 
 fn store_watch(

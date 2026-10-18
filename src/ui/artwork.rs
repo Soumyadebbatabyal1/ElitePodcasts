@@ -9,8 +9,16 @@ use std::time::Duration;
 use crate::cache;
 use crate::discovery_service::USER_AGENT;
 
-const MAX_IMAGE_BYTES: u64 = 3 * 1024 * 1024;
+const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CACHED_IMAGES: usize = 128;
+const MAX_SOURCE_DIMENSION: i32 = 4096;
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct ImageKey {
+    url: String,
+    size: i32,
+    full_source: bool,
+}
 
 struct DecodedImage {
     pixels: Vec<u8>,
@@ -23,31 +31,35 @@ struct DecodedImage {
 struct ArtworkBinding {
     picture: gtk::glib::WeakRef<gtk::Picture>,
     candidates: Vec<String>,
+    decoded_size: i32,
+    quality_target: i32,
+    full_source: bool,
     displayed_url: Option<String>,
 }
 
 pub struct ArtworkLoader {
-    jobs: mpsc::Sender<String>,
-    pending: RefCell<HashSet<String>>,
-    cache: RefCell<HashMap<String, gtk::gdk::Texture>>,
-    failed: RefCell<HashSet<String>>,
+    jobs: mpsc::Sender<ImageKey>,
+    pending: RefCell<HashSet<ImageKey>>,
+    cache: RefCell<HashMap<ImageKey, gtk::gdk::Texture>>,
+    failed: RefCell<HashSet<ImageKey>>,
     bindings: RefCell<Vec<ArtworkBinding>>,
 }
 
 impl ArtworkLoader {
     pub fn new() -> Rc<Self> {
-        let (jobs_tx, jobs_rx) = mpsc::channel::<String>();
+        let (jobs_tx, jobs_rx) = mpsc::channel::<ImageKey>();
         let jobs_rx = Arc::new(Mutex::new(jobs_rx));
-        let (done_tx, done_rx) = mpsc::channel::<(String, Option<DecodedImage>)>();
+        let (done_tx, done_rx) = mpsc::channel::<(ImageKey, Option<DecodedImage>)>();
         for _ in 0..4 {
             let jobs_rx = jobs_rx.clone();
             let done_tx = done_tx.clone();
             std::thread::spawn(move || {
                 loop {
                     let job = jobs_rx.lock().expect("artwork queue mutex poisoned").recv();
-                    let Ok(url) = job else { break };
-                    let decoded = fetch(&url).and_then(|bytes| decode(&bytes));
-                    if done_tx.send((url, decoded)).is_err() {
+                    let Ok(key) = job else { break };
+                    let decoded = fetch(&key.url)
+                        .and_then(|bytes| decode(&bytes, key.size, key.full_source));
+                    if done_tx.send((key, decoded)).is_err() {
                         break;
                     }
                 }
@@ -67,8 +79,8 @@ impl ArtworkLoader {
             };
             let mut changed = false;
             for _ in 0..4 {
-                let Ok((url, decoded)) = done_rx.try_recv() else { break };
-                loader.pending.borrow_mut().remove(&url);
+                let Ok((key, decoded)) = done_rx.try_recv() else { break };
+                loader.pending.borrow_mut().remove(&key);
                 if let Some(decoded) = decoded {
                     let pixels = gtk::glib::Bytes::from_owned(decoded.pixels);
                     let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
@@ -83,13 +95,13 @@ impl ArtworkLoader {
                     let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
                     let mut cache = loader.cache.borrow_mut();
                     if cache.len() >= MAX_CACHED_IMAGES {
-                        if let Some(old_url) = cache.keys().next().cloned() {
-                            cache.remove(&old_url);
+                        if let Some(old_key) = cache.keys().next().cloned() {
+                            cache.remove(&old_key);
                         }
                     }
-                    cache.insert(url, texture);
+                    cache.insert(key, texture);
                 } else {
-                    loader.failed.borrow_mut().insert(url);
+                    loader.failed.borrow_mut().insert(key);
                 }
                 changed = true;
             }
@@ -102,22 +114,77 @@ impl ArtworkLoader {
     }
 
     pub fn cached_widget(&self, candidates: &[String], size: i32) -> gtk::Widget {
-        let (widget, picture) = self.make_widget(size);
+        let decoded_size = (size.saturating_mul(2) as u32)
+            .next_power_of_two()
+            .clamp(128, 512) as i32;
+        self.widget(candidates.to_vec(), size, decoded_size)
+    }
+
+    pub fn large_cover_widget(self: &Rc<Self>, candidates: &[String], size: i32) -> gtk::Widget {
+        let (widget, picture) = self.make_widget(size, true);
+        self.bindings.borrow_mut().push(ArtworkBinding {
+            picture: picture.downgrade(),
+            candidates: large_cover_candidates(candidates),
+            decoded_size: 0,
+            quality_target: 0,
+            full_source: true,
+            displayed_url: None,
+        });
+        let weak = Rc::downgrade(self);
+        picture.connect_map(move |picture| {
+            if let Some(loader) = weak.upgrade() {
+                loader.update_large_cover(picture, size);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        picture.connect_notify_local(Some("scale-factor"), move |picture, _| {
+            if picture.is_mapped() {
+                if let Some(loader) = weak.upgrade() {
+                    loader.update_large_cover(picture, size);
+                }
+            }
+        });
+        widget
+    }
+
+    fn update_large_cover(&self, picture: &gtk::Picture, size: i32) {
+        let target = size.saturating_mul(picture.scale_factor().max(1));
+        let mut bindings = self.bindings.borrow_mut();
+        if let Some(binding) = bindings.iter_mut().find(|binding| {
+            binding.picture.upgrade().is_some_and(|bound| bound == *picture)
+        }) {
+            if binding.decoded_size == target {
+                return;
+            }
+            binding.decoded_size = target;
+            binding.quality_target = target;
+            binding.displayed_url = None;
+            picture.set_paintable(None::<&gtk::gdk::Texture>);
+        }
+        drop(bindings);
+        self.refresh_bindings();
+    }
+
+    fn widget(&self, candidates: Vec<String>, size: i32, decoded_size: i32) -> gtk::Widget {
+        let (widget, picture) = self.make_widget(size, false);
         let mut displayed_url = None;
-        self.advance(candidates);
-        if let Some((url, texture)) = self.best_texture(candidates) {
+        self.advance(&candidates, decoded_size, 0, false);
+        if let Some((url, texture)) = self.best_texture(&candidates, decoded_size, false) {
             picture.set_paintable(Some(&texture));
             displayed_url = Some(url);
         }
         self.bindings.borrow_mut().push(ArtworkBinding {
             picture: picture.downgrade(),
-            candidates: candidates.to_vec(),
+            candidates,
+            decoded_size,
+            quality_target: 0,
+            full_source: false,
             displayed_url,
         });
         widget
     }
 
-    fn make_widget(&self, size: i32) -> (gtk::Widget, gtk::Picture) {
+    fn make_widget(&self, size: i32, large: bool) -> (gtk::Widget, gtk::Picture) {
         let overlay = gtk::Overlay::new();
         overlay.set_size_request(size, size);
         overlay.set_overflow(gtk::Overflow::Hidden);
@@ -132,26 +199,34 @@ impl ArtworkLoader {
         icon.add_css_class("dim-label");
         overlay.add_overlay(&icon);
         let picture = gtk::Picture::new();
-        picture.set_content_fit(gtk::ContentFit::Cover);
+        picture.set_content_fit(if large { gtk::ContentFit::ScaleDown } else { gtk::ContentFit::Cover });
         picture.set_can_shrink(true);
         picture.set_size_request(size, size);
         overlay.add_overlay(&picture);
         (overlay.upcast(), picture)
     }
 
-    fn best_texture(&self, candidates: &[String]) -> Option<(String, gtk::gdk::Texture)> {
+    fn best_texture(&self, candidates: &[String], decoded_size: i32, full_source: bool) -> Option<(String, gtk::gdk::Texture)> {
         let cache = self.cache.borrow();
         candidates.iter()
-            .find_map(|url| cache.get(url).map(|pixbuf| (url, pixbuf)))
-            .map(|(url, pixbuf)| (url.clone(), pixbuf.clone()))
+            .filter_map(|url| cache.get(&ImageKey { url: url.clone(), size: decoded_size, full_source }).map(|texture| (url, texture)))
+            .fold(None, |best: Option<(&String, &gtk::gdk::Texture)>, next| {
+                match best {
+                    Some(current) if current.1.width().min(current.1.height())
+                        >= next.1.width().min(next.1.height()) => Some(current),
+                    _ => Some(next),
+                }
+            })
+            .map(|(url, texture)| (url.clone(), texture.clone()))
     }
 
     fn refresh_bindings(&self) {
         self.bindings.borrow_mut().retain(|binding| binding.picture.upgrade().is_some());
         for binding in self.bindings.borrow_mut().iter_mut() {
             if let Some(picture) = binding.picture.upgrade() {
-                self.advance(&binding.candidates);
-                if let Some((url, texture)) = self.best_texture(&binding.candidates) {
+                if binding.decoded_size == 0 { continue; }
+                self.advance(&binding.candidates, binding.decoded_size, binding.quality_target, binding.full_source);
+                if let Some((url, texture)) = self.best_texture(&binding.candidates, binding.decoded_size, binding.full_source) {
                     if binding.displayed_url.as_deref() != Some(&url) {
                         picture.set_paintable(Some(&texture));
                         binding.displayed_url = Some(url);
@@ -165,37 +240,64 @@ impl ArtworkLoader {
         url.len() <= 2048 && (url.starts_with("https://") || url.starts_with("http://"))
     }
 
-    fn is_ready(&self, url: &str) -> bool {
-        !Self::valid_url(url)
-            || self.cache.borrow().contains_key(url)
-            || self.failed.borrow().contains(url)
+    fn is_ready(&self, key: &ImageKey) -> bool {
+        !Self::valid_url(&key.url)
+            || self.cache.borrow().contains_key(key)
+            || self.failed.borrow().contains(key)
     }
 
-    fn advance(&self, candidates: &[String]) -> bool {
+    fn advance(&self, candidates: &[String], decoded_size: i32, quality_target: i32, full_source: bool) -> bool {
         for url in candidates {
-            if !Self::valid_url(url) || self.failed.borrow().contains(url) {
+            let key = ImageKey { url: url.clone(), size: decoded_size, full_source };
+            if !Self::valid_url(url) || self.failed.borrow().contains(&key) {
                 continue;
             }
-            if self.cache.borrow().contains_key(url) {
-                return true;
+            if let Some(texture) = self.cache.borrow().get(&key) {
+                if texture.width().min(texture.height()) >= quality_target {
+                    return true;
+                }
+                continue;
             }
-            if !self.pending.borrow().contains(url) {
-                self.request(url);
+            if !self.pending.borrow().contains(&key) {
+                self.request(key);
             }
             return false;
         }
         true
     }
 
-    fn request(&self, url: &str) {
-        if !Self::valid_url(url) || self.is_ready(url) {
+    fn request(&self, key: ImageKey) {
+        if self.is_ready(&key) {
             return;
         }
         let mut pending = self.pending.borrow_mut();
-        if pending.insert(url.to_string()) {
-            let _ = self.jobs.send(url.to_string());
+        if pending.insert(key.clone()) {
+            let _ = self.jobs.send(key);
         }
     }
+}
+
+fn large_cover_candidates(candidates: &[String]) -> Vec<String> {
+    let mut result = Vec::with_capacity(candidates.len() * 2);
+    for url in candidates {
+        if let Some((base, suffix)) = url.rsplit_once('/') {
+            let host = url.split('/').nth(2).unwrap_or_default();
+            if url.starts_with("https://")
+                && host.ends_with(".mzstatic.com")
+                && matches!(suffix, "600x600bb.jpg" | "600x600bb.jpeg" | "100x100bb.jpg" | "100x100bb.jpeg")
+            {
+                let extension = suffix.rsplit_once('.').map(|(_, extension)| extension).unwrap_or("jpg");
+                let larger = format!("{base}/1200x1200bb.{extension}");
+                if !result.contains(&larger) {
+                    result.push(larger);
+                }
+            }
+        }
+        if !result.contains(url) {
+            result.push(url.clone());
+        }
+    }
+    result
 }
 
 fn fetch(url: &str) -> Option<Vec<u8>> {
@@ -225,12 +327,19 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     }
 }
 
-fn decode(bytes: &[u8]) -> Option<DecodedImage> {
+fn decode(bytes: &[u8], target_size: i32, full_source: bool) -> Option<DecodedImage> {
     let loader = gtk::gdk_pixbuf::PixbufLoader::new();
-    loader.connect_size_prepared(|loader, width, height| {
+    // Large covers use the original image when possible and are resized once.
+    // Bound unusually large sources before decoding to avoid excessive memory use.
+    let decode_limit = if full_source {
+        MAX_SOURCE_DIMENSION
+    } else {
+        target_size.saturating_mul(3).min(2048)
+    };
+    loader.connect_size_prepared(move |loader, width, height| {
         let largest = width.max(height);
-        if largest > 512 {
-            let scale = 512.0 / f64::from(largest);
+        if largest > decode_limit {
+            let scale = f64::from(decode_limit) / f64::from(largest);
             loader.set_size(
                 (f64::from(width) * scale).round().max(1.0) as i32,
                 (f64::from(height) * scale).round().max(1.0) as i32,
@@ -240,6 +349,17 @@ fn decode(bytes: &[u8]) -> Option<DecodedImage> {
     loader.write(bytes).ok()?;
     loader.close().ok()?;
     let pixbuf = loader.pixbuf()?;
+    let largest = pixbuf.width().max(pixbuf.height());
+    let pixbuf = if largest > target_size {
+        let scale = f64::from(target_size) / f64::from(largest);
+        pixbuf.scale_simple(
+            (f64::from(pixbuf.width()) * scale).round().max(1.0) as i32,
+            (f64::from(pixbuf.height()) * scale).round().max(1.0) as i32,
+            gtk::gdk_pixbuf::InterpType::Hyper,
+        )?
+    } else {
+        pixbuf
+    };
     Some(DecodedImage {
         pixels: pixbuf.read_pixel_bytes().as_ref().to_vec(),
         width: pixbuf.width(),

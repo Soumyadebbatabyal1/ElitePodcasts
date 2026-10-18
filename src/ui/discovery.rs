@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::artwork::ArtworkLoader;
-use super::episode::{plain_description, show_dialog as show_episode_dialog};
+use super::episode::{format_date, plain_description, show_dialog as show_episode_dialog};
 use crate::data::{self, CATEGORIES};
 use crate::discovery_service::{self, Episode, FeedDetails, Show};
 use crate::following::FollowingStore;
@@ -28,12 +28,13 @@ pub(super) fn page(
     artwork: Rc<ArtworkLoader>,
     playback: Rc<PlaybackController>,
     toast: Rc<dyn Fn(&str)>,
+    follow_toast: Rc<dyn Fn(&str)>,
     back_to_following: Rc<dyn Fn()>,
 ) -> DiscoveryPage {
     let view = gtk::Stack::new();
     view.set_vexpand(true);
-    let (website, selected_show, website_action, unsubscribe_action, mark_action, play_action) =
-        setup_podcast_menu(menu, store.clone(), toast.clone());
+    let (website, selected_show, website_action, unsubscribe_action, mark_action, play_action, mark_menu) =
+        setup_podcast_menu(menu, store.clone(), toast.clone(), follow_toast.clone());
     let origin_following = Rc::new(Cell::new(false));
 
     let results = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -65,6 +66,13 @@ pub(super) fn page(
     feed_artwork.set_halign(gtk::Align::Center);
     feed_artwork.set_margin_bottom(8);
     feed_content.append(&feed_artwork);
+    let feed_metadata = gtk::Label::new(None);
+    feed_metadata.add_css_class("podcast-metadata");
+    feed_metadata.set_halign(gtk::Align::Center);
+    feed_metadata.set_wrap(true);
+    feed_metadata.set_justify(gtk::Justification::Center);
+    feed_metadata.set_visible(false);
+    feed_content.append(&feed_metadata);
     let feed_description = gtk::Label::new(None);
     feed_description.set_halign(gtk::Align::Center);
     feed_description.set_justify(gtk::Justification::Center);
@@ -87,95 +95,146 @@ pub(super) fn page(
     actions.set_margin_top(2);
     actions.set_margin_bottom(8);
     actions.set_visible(false);
-    let mark_button = gtk::Button::from_icon_name("audio-headphones-symbolic");
-    mark_button.add_css_class("circular");
-    mark_button.add_css_class("podcast-round-action");
-    mark_button.set_size_request(40, 40);
-    mark_button.set_valign(gtk::Align::Center);
-    mark_button.set_tooltip_text(Some("Mark all episodes as played"));
-    mark_button.set_sensitive(false);
-    actions.append(&mark_button);
+    let details_button = gtk::Button::from_icon_name("help-about-symbolic");
+    details_button.add_css_class("circular");
+    details_button.add_css_class("podcast-round-action");
+    details_button.set_size_request(40, 40);
+    details_button.set_valign(gtk::Align::Center);
+    details_button.set_tooltip_text(Some("Podcast details"));
+    details_button.set_sensitive(false);
+    actions.append(&details_button);
+    let current_feed = Rc::new(RefCell::new(None::<FeedDetails>));
+    let feed_for_details = current_feed.clone();
+    let show_for_details = selected_show.clone();
+    details_button.connect_clicked(move |button| {
+        if let (Some(feed), Some(show)) = (feed_for_details.borrow().as_ref(), show_for_details.borrow().as_ref()) {
+            show_podcast_details(button, show, feed);
+        }
+    });
+    let follow_button = gtk::Button::new();
+    follow_button.add_css_class("podcast-follow-button");
+    follow_button.set_valign(gtk::Align::Center);
+    actions.append(&follow_button);
     let latest_button = gtk::Button::new();
-    latest_button.add_css_class("latest-episode-button");
+    latest_button.add_css_class("circular");
+    latest_button.add_css_class("podcast-round-action");
     latest_button.set_tooltip_text(Some("Play the latest episode"));
     latest_button.set_sensitive(false);
-    let latest_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let latest_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
-    latest_content.append(&latest_icon);
-    latest_content.append(&gtk::Label::new(Some("Latest episode")));
-    latest_button.set_child(Some(&latest_content));
+    latest_button.set_child(Some(&latest_icon));
+    latest_button.set_size_request(40, 40);
+    latest_button.set_valign(gtk::Align::Center);
     actions.append(&latest_button);
     let action_for_latest_button = play_action.clone();
     latest_button.connect_clicked(move |_| action_for_latest_button.activate(None));
     let current_latest = Rc::new(RefCell::new(None::<Episode>));
+    let all_played = Rc::new(Cell::new(false));
     let latest_icon_weak = latest_icon.downgrade();
+    let latest_button_weak = latest_button.downgrade();
     let latest_for_update = current_latest.clone();
     let selected_for_update = selected_show.clone();
     let playback_for_update = Rc::downgrade(&playback);
+    let all_played_for_update = all_played.clone();
     playback.watch(move || {
-        let (Some(icon), Some(playback)) = (latest_icon_weak.upgrade(), playback_for_update.upgrade()) else {
+        let (Some(icon), Some(button), Some(playback)) = (latest_icon_weak.upgrade(), latest_button_weak.upgrade(), playback_for_update.upgrade()) else {
             return false;
         };
         let active = selected_for_update.borrow().as_ref().zip(latest_for_update.borrow().as_ref())
             .is_some_and(|(show, episode)| playback.is_current(&show.feed_url, &episode.id) && playback.is_playing());
-        icon.set_icon_name(Some(if active {
-            "media-playback-pause-symbolic"
-        } else {
-            "media-playback-start-symbolic"
-        }));
+        update_latest_button(&icon, &button, active, all_played_for_update.get());
         true
     });
     let latest_for_action = current_latest.clone();
     let selected_for_latest = selected_show.clone();
     let playback_for_latest = playback.clone();
     let toast_for_latest = toast.clone();
+    let all_played_for_latest = all_played.clone();
     play_action.connect_activate(move |_, _| {
         if let (Some(show), Some(episode)) = (
             selected_for_latest.borrow().as_ref(),
             latest_for_action.borrow().as_ref(),
         ) {
-            if let Err(error) = playback_for_latest.play_or_toggle(show, episode) {
+            let result = if all_played_for_latest.get() {
+                playback_for_latest.replay_episode(show, episode)
+            } else {
+                playback_for_latest.play_or_toggle(show, episode)
+            };
+            if let Err(error) = result {
                 toast_for_latest(&error);
             }
         }
     });
-    let follow_button = gtk::Button::from_icon_name("list-add-symbolic");
-    follow_button.add_css_class("circular");
-    follow_button.add_css_class("podcast-round-action");
-    follow_button.set_size_request(40, 40);
-    follow_button.set_valign(gtk::Align::Center);
-    follow_button.set_tooltip_text(Some("Add to Following"));
-    actions.append(&follow_button);
     feed_content.append(&actions);
     let episodes = gtk::Box::new(gtk::Orientation::Vertical, 0);
     episodes.set_margin_top(8);
     feed_content.append(&episodes);
     let current_episodes = Rc::new(RefCell::new(Vec::<String>::new()));
+    let played_badges = Rc::new(RefCell::new(HashMap::<String, gtk::Image>::new()));
     let store_for_mark = store.clone();
     let selected_for_mark = selected_show.clone();
     let episode_ids_for_mark = current_episodes.clone();
     let toast_for_mark = toast.clone();
+    let all_played_for_mark = all_played.clone();
+    let menu_for_mark = menu.clone();
+    let playback_for_mark = playback.clone();
     mark_action.connect_activate(move |_, _| {
         let Some(show) = selected_for_mark.borrow().clone() else {
             return;
         };
-        let ids = episode_ids_for_mark.borrow();
-        match store_for_mark.mark_played(&show.feed_url, &ids) {
-            Ok(added) => {
-                toast_for_mark(if added == 0 {
-                    "Episodes were already marked as played"
-                } else {
-                    "Episodes marked as played"
-                });
+        if all_played_for_mark.get() {
+            match store_for_mark.mark_all_unplayed(&show.feed_url) {
+                Ok(_) => toast_for_mark("Episodes marked as unplayed"),
+                Err(message) => toast_for_mark(&message),
             }
-            Err(message) => toast_for_mark(&message),
+        } else {
+            let ids = episode_ids_for_mark.borrow().clone();
+            let already_played = match store_for_mark.played_ids(&show.feed_url) {
+                Ok(played) => played,
+                Err(message) => {
+                    toast_for_mark(&message);
+                    return;
+                }
+            };
+            let remaining: Vec<String> = ids.into_iter()
+                .filter(|id| !already_played.contains(id))
+                .collect();
+            if remaining.is_empty() {
+                return;
+            }
+            let scope = if already_played.is_empty() { "all" } else { "remaining" };
+            let body = format!(
+                "Are you sure you want to mark {scope} episodes as played and reset their saved listening progress?"
+            );
+            let dialog = adw::AlertDialog::new(Some("Mark episodes as played?"), Some(&body));
+            dialog.add_responses(&[("cancel", "Cancel"), ("mark", "Mark as Played")]);
+            dialog.set_close_response("cancel");
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_response_appearance("mark", adw::ResponseAppearance::Destructive);
+            let store = store_for_mark.clone();
+            let playback = playback_for_mark.clone();
+            let toast = toast_for_mark.clone();
+            dialog.connect_response(None, move |_, response| {
+                if response != "mark" {
+                    return;
+                }
+                if remaining.iter().any(|id| playback.is_current(&show.feed_url, id)) {
+                    if let Err(message) = playback.stop() {
+                        toast(&message);
+                        return;
+                    }
+                }
+                match store.mark_played_and_reset(&show.feed_url, &remaining) {
+                    Ok(_) => toast("Episodes marked as played"),
+                    Err(message) => toast(&message),
+                }
+            });
+            dialog.present(Some(&menu_for_mark));
         }
     });
-    let action_for_mark_button = mark_action.clone();
-    mark_button.connect_clicked(move |_| action_for_mark_button.activate(None));
     let selected_for_follow = selected_show.clone();
     let store_for_follow = store.clone();
     let toast_for_follow = toast.clone();
+    let follow_toast_for_button = follow_toast.clone();
     let menu_unsubscribe_for_follow = unsubscribe_action.clone();
     follow_button.connect_clicked(move |_| {
         let Some(show) = selected_for_follow.borrow().clone() else {
@@ -185,7 +244,7 @@ pub(super) fn page(
             match store_for_follow.remove(&show.feed_url) {
                 Ok(true) => {
                     menu_unsubscribe_for_follow.set_enabled(false);
-                    toast_for_follow(&format!("Unsubscribed from {}", show.title));
+                    follow_toast_for_button(&format!("Unsubscribed from {}", show.title));
                 }
                 Ok(false) => {}
                 Err(message) => toast_for_follow(&message),
@@ -194,7 +253,7 @@ pub(super) fn page(
             match store_for_follow.add(&show) {
                 Ok(true) => {
                     menu_unsubscribe_for_follow.set_enabled(true);
-                    toast_for_follow(&format!("Added {} to Following", show.title));
+                    follow_toast_for_button(&format!("Added {} to Following", show.title));
                 }
                 Ok(false) => {}
                 Err(message) => toast_for_follow(&message),
@@ -213,6 +272,30 @@ pub(super) fn page(
         } else {
             false
         }
+    });
+    let weak_store_for_played = Rc::downgrade(&store);
+    let weak_latest_for_played = latest_button.downgrade();
+    let weak_icon_for_played = latest_icon.downgrade();
+    let selected_for_played = selected_show.clone();
+    let ids_for_played = current_episodes.clone();
+    let badges_for_played = played_badges.clone();
+    let menu_for_played = mark_menu.clone();
+    let all_for_played = all_played.clone();
+    let latest_for_played = current_latest.clone();
+    let playback_for_played = Rc::downgrade(&playback);
+    store.watch(move || {
+        let (Some(store), Some(button), Some(icon), Some(playback)) = (
+            weak_store_for_played.upgrade(), weak_latest_for_played.upgrade(),
+            weak_icon_for_played.upgrade(), playback_for_played.upgrade(),
+        ) else {
+            return false;
+        };
+        update_played_ui(
+            &store, &selected_for_played, &ids_for_played, &badges_for_played,
+            &menu_for_played, &all_for_played, &latest_for_played,
+            &icon, &button, &playback,
+        );
+        true
     });
     let feed_clamp = adw::Clamp::builder().maximum_size(560).build();
     feed_clamp.set_margin_start(16);
@@ -292,14 +375,20 @@ pub(super) fn page(
         let artwork = artwork.clone();
         let back = back.clone();
         let feed_content = feed_content.clone();
+        let feed_metadata = feed_metadata.clone();
         let full_description = full_description.clone();
         let actions = actions.clone();
         let follow_button = follow_button.clone();
-        let mark_button = mark_button.clone();
+        let details_button = details_button.clone();
+        let current_feed = current_feed.clone();
         let current_episodes = current_episodes.clone();
+        let played_badges = played_badges.clone();
+        let all_played = all_played.clone();
+        let mark_menu = mark_menu.clone();
         let mark_action = mark_action.clone();
         let play_action = play_action.clone();
         let latest_button = latest_button.clone();
+        let latest_icon = latest_icon.clone();
         let feed_state = feed_state.clone();
         let current_latest = current_latest.clone();
         let playback = playback.clone();
@@ -323,15 +412,22 @@ pub(super) fn page(
             clear(&feed_artwork);
             feed_description.set_text("");
             feed_description.set_visible(false);
+            feed_metadata.set_text("");
+            feed_metadata.set_visible(false);
             full_description.borrow_mut().clear();
+            *current_feed.borrow_mut() = None;
             actions.set_visible(false);
             update_follow_button(&follow_button, store.contains(&show.feed_url));
-            mark_button.set_sensitive(false);
+            details_button.set_sensitive(false);
             mark_action.set_enabled(false);
             current_episodes.borrow_mut().clear();
+            played_badges.borrow_mut().clear();
+            all_played.set(false);
+            set_mark_menu_label(&mark_menu, "Mark All as Played");
             *current_latest.borrow_mut() = None;
             play_action.set_enabled(false);
             latest_button.set_sensitive(false);
+            update_latest_button(&latest_icon, &latest_button, false, false);
             feed_state.set_visible_child_name("content");
             clear(&episodes);
             view.set_transition_type(if animate {
@@ -355,13 +451,18 @@ pub(super) fn page(
             let generation = generation.clone();
             let episodes = episodes.clone();
             let feed_description = feed_description.clone();
+            let feed_metadata = feed_metadata.clone();
             let feed_artwork = feed_artwork.clone();
             let feed_content = feed_content.clone();
             let full_description = full_description.clone();
             let actions = actions.clone();
-            let mark_button = mark_button.clone();
+            let details_button = details_button.clone();
+            let current_feed = current_feed.clone();
             let mark_action = mark_action.clone();
             let current_episodes = current_episodes.clone();
+            let played_badges = played_badges.clone();
+            let all_played = all_played.clone();
+            let mark_menu = mark_menu.clone();
             let status = status.clone();
             let artwork = artwork.clone();
             let website = website.clone();
@@ -369,10 +470,12 @@ pub(super) fn page(
             let selected_show = selected_show.clone();
             let play_action = play_action.clone();
             let latest_button = latest_button.clone();
+            let latest_icon = latest_icon.clone();
             let feed_state = feed_state.clone();
             let current_latest = current_latest.clone();
             let playback = playback.clone();
             let toast = toast.clone();
+            let store = store.clone();
             let view_for_loading = view.clone();
             let outer_pages_for_loading = outer_pages.clone();
             let loading_started = Cell::new(false);
@@ -403,41 +506,72 @@ pub(super) fn page(
                                 covers.extend(fallback_artwork.clone());
                                 let feed_artwork = feed_artwork.clone();
                                 let feed_description = feed_description.clone();
+                                let feed_metadata = feed_metadata.clone();
                                 let feed_content = feed_content.clone();
                                 let episodes = episodes.clone();
                                 let full_description = full_description.clone();
                                 let actions = actions.clone();
-                                let mark_button = mark_button.clone();
+                                let details_button = details_button.clone();
+                                let current_feed = current_feed.clone();
                                 let mark_action = mark_action.clone();
                                 let current_episodes = current_episodes.clone();
+                                let played_badges = played_badges.clone();
+                                let all_played = all_played.clone();
+                                let mark_menu = mark_menu.clone();
                                 let artwork_for_feed = artwork.clone();
                                 let status = status.clone();
                                 let show_for_feed = show_for_feed.clone();
                                 let selected_show = selected_show.clone();
                                 let play_action = play_action.clone();
                                 let latest_button = latest_button.clone();
+                                let latest_icon = latest_icon.clone();
                                 let current_latest = current_latest.clone();
                                 let playback = playback.clone();
                                 let toast = toast.clone();
                                 let mut show_for_feed = show_for_feed;
                                 show_for_feed.artwork_urls = covers.clone();
                                 *selected_show.borrow_mut() = Some(show_for_feed.clone());
-                                feed_artwork.append(&artwork_for_feed.cached_widget(&covers, 190));
+                                if let Some(cover_url) = feed.artwork_url.as_ref() {
+                                    if let Err(message) = store.prefer_feed_artworks(&[(show_for_feed.feed_url.clone(), cover_url.clone())]) {
+                                        toast(&message);
+                                    }
+                                }
+                                feed_artwork.append(&artwork_for_feed.large_cover_widget(&covers, 190));
                                 let ids = feed.all_episode_ids.clone();
                                 *current_episodes.borrow_mut() = ids;
                                 let can_mark = !current_episodes.borrow().is_empty();
-                                mark_button.set_sensitive(can_mark);
                                 mark_action.set_enabled(can_mark);
+                                let mut metadata = feed.categories.iter().take(2).cloned().collect::<Vec<_>>();
+                                let updated = feed.last_updated.as_deref()
+                                    .map(format_date)
+                                    .filter(|value| !value.is_empty())
+                                    .or_else(|| show_for_feed.updated.as_deref().and_then(format_search_date));
+                                if let Some(updated) = updated {
+                                    metadata.push(format!("Updated {updated}"));
+                                }
+                                feed_metadata.set_text(&metadata.join(" · "));
+                                feed_metadata.set_visible(!metadata.is_empty());
+                                *current_feed.borrow_mut() = Some(feed.clone());
+                                details_button.set_sensitive(true);
                                 *current_latest.borrow_mut() = feed.episodes.iter()
                                     .find(|episode| episode.audio_url.is_some())
                                     .cloned();
                                 let can_play = current_latest.borrow().is_some();
                                 play_action.set_enabled(can_play);
                                 latest_button.set_sensitive(can_play);
+                                let active = current_latest.borrow().as_ref().is_some_and(|episode| {
+                                    playback.is_current(&show_for_feed.feed_url, &episode.id) && playback.is_playing()
+                                });
+                                update_latest_button(&latest_icon, &latest_button, active, false);
                                 show_feed(
                                     &feed_description, &full_description, &episodes, feed,
                                     &show_for_feed, artwork_for_feed.clone(),
-                                    playback, toast,
+                                    playback.clone(), toast, played_badges.clone(),
+                                );
+                                update_played_ui(
+                                    &store, &selected_show, &current_episodes, &played_badges,
+                                    &mark_menu, &all_played, &current_latest,
+                                    &latest_icon, &latest_button, &playback,
                                 );
                                 actions.set_visible(true);
                                 feed_content.set_visible(true);
@@ -498,6 +632,7 @@ pub(super) fn page(
         let menu = menu.clone();
         let store = store.clone();
         let toast = toast.clone();
+        let follow_toast = follow_toast.clone();
         Rc::new(move |term| {
             category_generation.set(category_generation.get().wrapping_add(1));
             category_loading.set(false);
@@ -533,6 +668,7 @@ pub(super) fn page(
             let open_feed = open_feed.clone();
             let store = store.clone();
             let toast = toast.clone();
+            let follow_toast = follow_toast.clone();
             let artwork = artwork.clone();
             let status = status.clone();
             let view_for_loading = view.clone();
@@ -550,7 +686,7 @@ pub(super) fn page(
                         match answer {
                             Ok(shows) => {
                                 clear(&listing);
-                                show_results(&listing, shows, open_feed.clone(), &artwork, true, &store, toast.clone());
+                                show_results(&listing, shows, open_feed.clone(), &artwork, true, &store, toast.clone(), follow_toast.clone());
                                 listing.set_visible(true);
                                 status(&title, false);
                             }
@@ -597,6 +733,7 @@ pub(super) fn page(
         let menu = menu.clone();
         let store = store.clone();
         let toast = toast.clone();
+        let follow_toast = follow_toast.clone();
         Rc::new(move |parent| {
             generation.set(generation.get().wrapping_add(1));
             *current_category.borrow_mut() = Some(parent.clone());
@@ -633,6 +770,7 @@ pub(super) fn page(
                 let status = status.clone();
                 let store = store.clone();
                 let toast = toast.clone();
+                let follow_toast = follow_toast.clone();
                 let parent = parent.clone();
                 Rc::new(move |selected| {
                     let Some(stack) = stack.upgrade() else { return };
@@ -664,6 +802,7 @@ pub(super) fn page(
                     let status = status.clone();
                     let store = store.clone();
                     let toast = toast.clone();
+                    let follow_toast = follow_toast.clone();
                     let listings = listings.clone();
                     let ready = ready.clone();
                     let parent = parent.clone();
@@ -690,7 +829,7 @@ pub(super) fn page(
                                         open_feed(show, animate);
                                         feed_from_category.set(true);
                                     });
-                                    show_results(&listing, shows, open_from_category, &artwork, false, &store, toast.clone());
+                                    show_results(&listing, shows, open_from_category, &artwork, false, &store, toast.clone(), follow_toast.clone());
                                 }
                                 Err(message) => show_message(&listing, "Could not load podcasts", &message),
                             }
@@ -878,6 +1017,7 @@ fn show_results(
     cue_first: bool,
     store: &Rc<FollowingStore>,
     toast: Rc<dyn Fn(&str)>,
+    follow_toast: Rc<dyn Fn(&str)>,
 ) {
     if shows.is_empty() {
         show_message(container, "No podcasts found", "No matching podcasts were found.");
@@ -936,12 +1076,13 @@ fn show_results(
         let show_for_add = show.clone();
         let store_for_add = store.clone();
         let toast_for_add = toast.clone();
+        let follow_toast_for_add = follow_toast.clone();
         add.connect_clicked(move |_| {
             if store_for_add.contains(&show_for_add.feed_url) {
                 return;
             }
             match store_for_add.add(&show_for_add) {
-                Ok(true) => toast_for_add(&format!("Added {} to Following", show_for_add.title)),
+                Ok(true) => follow_toast_for_add(&format!("Added {} to Following", show_for_add.title)),
                 Ok(false) => {}
                 Err(message) => toast_for_add(&message),
             }
@@ -1005,16 +1146,134 @@ fn update_add_button(button: &gtk::Button, added: bool) {
 }
 
 fn update_follow_button(button: &gtk::Button, followed: bool) {
-    button.set_icon_name(if followed {
-        "object-select-symbolic"
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let icon = gtk::Image::from_icon_name(if followed {
+        "app-installed-symbolic"
     } else {
         "list-add-symbolic"
     });
-    button.set_tooltip_text(Some(if followed {
-        "Unsubscribe"
+    icon.set_pixel_size(16);
+    icon.set_valign(gtk::Align::Center);
+    content.append(&icon);
+    content.append(&gtk::Label::new(Some(if followed { "Following" } else { "Follow" })));
+    button.set_child(Some(&content));
+    if followed {
+        button.add_css_class("podcast-following");
     } else {
-        "Add to Following"
+        button.remove_css_class("podcast-following");
+    }
+    button.set_tooltip_text(Some(if followed {
+        "Unfollow this podcast"
+    } else {
+        "Follow this podcast"
     }));
+}
+
+fn update_latest_button(icon: &gtk::Image, button: &gtk::Button, active: bool, replay: bool) {
+    icon.set_icon_name(Some(if replay {
+        "view-refresh-symbolic"
+    } else if active {
+        "media-playback-pause-symbolic"
+    } else {
+        "media-playback-start-symbolic"
+    }));
+    button.set_tooltip_text(Some(if replay {
+        "Replay the latest episode from the beginning"
+    } else if active {
+        "Pause the latest episode"
+    } else {
+        "Play the latest episode"
+    }));
+}
+
+fn set_mark_menu_label(menu: &gtk::gio::Menu, label: &str) {
+    menu.remove(1);
+    menu.insert(1, Some(label), Some("podcast.mark-played"));
+}
+
+fn update_played_ui(
+    store: &FollowingStore,
+    selected_show: &Rc<RefCell<Option<Show>>>,
+    episode_ids: &Rc<RefCell<Vec<String>>>,
+    badges: &Rc<RefCell<HashMap<String, gtk::Image>>>,
+    mark_menu: &gtk::gio::Menu,
+    all_played: &Cell<bool>,
+    latest: &Rc<RefCell<Option<Episode>>>,
+    latest_icon: &gtk::Image,
+    latest_button: &gtk::Button,
+    playback: &PlaybackController,
+) {
+    let Some(show) = selected_show.borrow().clone() else {
+        return;
+    };
+    let ids = episode_ids.borrow();
+    if ids.is_empty() {
+        return;
+    }
+    let Ok(played) = store.played_ids(&show.feed_url) else {
+        return;
+    };
+    for (id, badge) in badges.borrow().iter() {
+        badge.set_visible(played.contains(id));
+    }
+    let count = ids.iter().filter(|id| played.contains(*id)).count();
+    let complete = count == ids.len();
+    all_played.set(complete);
+    set_mark_menu_label(mark_menu, if complete {
+        "Mark All as Unplayed"
+    } else if count > 0 {
+        "Mark Rest as Played"
+    } else {
+        "Mark All as Played"
+    });
+    let active = latest.borrow().as_ref().is_some_and(|episode| {
+        playback.is_current(&show.feed_url, &episode.id) && playback.is_playing()
+    });
+    update_latest_button(latest_icon, latest_button, active, complete);
+}
+
+fn show_podcast_details(parent: &gtk::Button, show: &Show, feed: &FeedDetails) {
+    let group = adw::PreferencesGroup::new();
+    let add_detail = |title: &str, value: &str| {
+        if !value.trim().is_empty() {
+            let row = adw::ActionRow::builder().title(title).subtitle(value).build();
+            row.set_subtitle_lines(0);
+            group.add(&row);
+        }
+    };
+    add_detail("Provider", &show.author);
+    if let Some(copyright) = feed.copyright.as_deref() {
+        add_detail("Copyright", copyright);
+    }
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    if show.author.trim().is_empty() && feed.copyright.as_deref().map_or(true, |value| value.trim().is_empty()) {
+        let empty = adw::StatusPage::builder()
+            .icon_name("help-about-symbolic")
+            .title("No podcast details available")
+            .description("This podcast feed has no additional details.")
+            .build();
+        toolbar.set_content(Some(&empty));
+    } else {
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        body.set_margin_top(16);
+        body.set_margin_bottom(24);
+        body.set_margin_start(24);
+        body.set_margin_end(24);
+        body.append(&group);
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&body)
+            .build();
+        toolbar.set_content(Some(&scroller));
+    }
+    let dialog = adw::Dialog::builder()
+        .title("Podcast details")
+        .content_width(440)
+        .content_height(320)
+        .child(&toolbar)
+        .build();
+    dialog.present(Some(parent));
 }
 
 fn show_description_dialog(parent: &gtk::Label, description: &str) {
@@ -1053,12 +1312,14 @@ type PodcastMenuState = (
     gtk::gio::SimpleAction,
     gtk::gio::SimpleAction,
     gtk::gio::SimpleAction,
+    gtk::gio::Menu,
 );
 
 fn setup_podcast_menu(
     button: &gtk::MenuButton,
     store: Rc<FollowingStore>,
     toast: Rc<dyn Fn(&str)>,
+    follow_toast: Rc<dyn Fn(&str)>,
 ) -> PodcastMenuState {
     button.set_visible(false);
     let model = gtk::gio::Menu::new();
@@ -1104,7 +1365,7 @@ fn setup_podcast_menu(
             match store.remove(&show.feed_url) {
                 Ok(true) => {
                     action.set_enabled(false);
-                    toast(&format!("Unsubscribed from {}", show.title));
+                    follow_toast(&format!("Unsubscribed from {}", show.title));
                 }
                 Ok(false) => {}
                 Err(message) => toast(&message),
@@ -1113,7 +1374,7 @@ fn setup_podcast_menu(
     });
     group.add_action(&unsubscribe);
     button.insert_action_group("podcast", Some(&group));
-    (website, selected_show, website_action, unsubscribe, mark_action, play_action)
+    (website, selected_show, website_action, unsubscribe, mark_action, play_action, model)
 }
 
 fn format_search_date(raw: &str) -> Option<String> {
@@ -1147,6 +1408,7 @@ fn show_feed(
     artwork: Rc<ArtworkLoader>,
     playback: Rc<PlaybackController>,
     toast: Rc<dyn Fn(&str)>,
+    played_badges: Rc<RefCell<HashMap<String, gtk::Image>>>,
 ) {
     let text = plain_description(&feed.description);
     *full_description.borrow_mut() = text.clone();
@@ -1170,7 +1432,8 @@ fn show_feed(
     let all_episodes = feed.episodes;
     let mut over_play_buttons = Vec::with_capacity(all_episodes.len());
     for episode in &all_episodes {
-        let (row, over_play) = super::episode_row::create(show, episode, &artwork, &playback, &toast, None);
+        let (row, over_play, badge) = super::episode_row::create(show, episode, &artwork, &playback, &toast, None);
+        played_badges.borrow_mut().insert(episode.id.clone(), badge);
         over_play_buttons.push(over_play);
         list.append(&row);
     }

@@ -14,7 +14,7 @@ pub(super) fn create(
     playback: &Rc<PlaybackController>,
     toast: &Rc<dyn Fn(&str)>,
     go_to_show: Option<Rc<dyn Fn(Show)>>,
-) -> (gtk::ListBoxRow, Rc<Cell<bool>>) {
+) -> (gtk::ListBoxRow, Rc<Cell<bool>>, gtk::Image) {
     let row = gtk::ListBoxRow::new();
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     content.set_margin_top(13);
@@ -35,7 +35,15 @@ pub(super) fn create(
     let date = gtk::Label::new(Some(&format_date(&episode.date)));
     date.set_xalign(0.0);
     date.add_css_class("episode-secondary-text");
-    text.append(&date);
+    let date_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let played_icon = gtk::Image::from_icon_name("object-select-symbolic");
+    played_icon.set_pixel_size(16);
+    played_icon.set_valign(gtk::Align::Center);
+    played_icon.add_css_class("episode-played-icon");
+    played_icon.set_visible(false);
+    date_line.append(&played_icon);
+    date_line.append(&date);
+    text.append(&date_line);
     let title = gtk::Label::new(Some(&episode.title));
     title.set_xalign(0.0);
     title.set_wrap(true);
@@ -99,7 +107,7 @@ pub(super) fn create(
     content.append(&play_button);
     row.set_child(Some(&content));
     attach_context_menu(&row, show, episode, playback, toast, go_to_show);
-    (row, over_play)
+    (row, over_play, played_icon)
 }
 
 fn attach_context_menu(

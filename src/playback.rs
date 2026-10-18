@@ -300,6 +300,14 @@ impl PlaybackController {
     }
 
     pub fn play_episode(&self, show: &Show, episode: &Episode) -> Result<(), String> {
+        self.start_episode(show, episode, false)
+    }
+
+    pub fn replay_episode(&self, show: &Show, episode: &Episode) -> Result<(), String> {
+        self.start_episode(show, episode, true)
+    }
+
+    fn start_episode(&self, show: &Show, episode: &Episode, restart: bool) -> Result<(), String> {
         let uri = episode.audio_url.as_deref().ok_or("This episode has no audio source")?;
         self.save_position();
         self.player
@@ -309,7 +317,7 @@ impl PlaybackController {
         self.player.set_property("uri", uri);
         let duration = episode.duration_seconds.unwrap_or(0);
         let saved = self.store.playback_position(&show.feed_url, &episode.id);
-        let resume = if duration > 0 && saved.saturating_add(15) >= duration {
+        let resume = if restart || (duration > 0 && saved.saturating_add(15) >= duration) {
             0
         } else {
             saved

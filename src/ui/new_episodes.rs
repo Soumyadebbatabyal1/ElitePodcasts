@@ -128,7 +128,7 @@ impl EpisodeList {
         let position = self.rows.values()
             .filter(|row| row.group == group_index && row.published >= timestamp)
             .count() as i32;
-        let (row, over) = super::episode_row::create(
+        let (row, over, _) = super::episode_row::create(
             &saved.show, &saved.episode, &self.artwork, &self.playback,
             &self.toast, Some(self.open_show.clone()),
         );

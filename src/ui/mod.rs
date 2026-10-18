@@ -10,6 +10,7 @@ mod player;
 
 use adw::prelude::*;
 use gtk::glib::value::ToValue;
+use std::cell::RefCell;
 use std::rc::Rc;
 use crate::following::FollowingStore;
 use artwork::ArtworkLoader;
@@ -35,6 +36,31 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         move |message| {
             if let Some(overlay) = overlay.upgrade() {
                 overlay.add_toast(adw::Toast::new(message));
+            }
+        }
+    });
+    let active_follow_toast = Rc::new(RefCell::new(None::<adw::Toast>));
+    let follow_toast: Rc<dyn Fn(&str)> = Rc::new({
+        let overlay = toast_overlay.downgrade();
+        let active = active_follow_toast.clone();
+        move |message| {
+            let Some(overlay) = overlay.upgrade() else { return };
+            let current = active.borrow().clone();
+            if let Some(current) = current {
+                current.set_title(message);
+                overlay.add_toast(current);
+            } else {
+                let notice = adw::Toast::new(message);
+                notice.set_timeout(3);
+                notice.set_use_markup(false);
+                let weak_active = Rc::downgrade(&active);
+                notice.connect_dismissed(move |_| {
+                    if let Some(active) = weak_active.upgrade() {
+                        active.borrow_mut().take();
+                    }
+                });
+                *active.borrow_mut() = Some(notice.clone());
+                overlay.add_toast(notice);
             }
         }
     });
@@ -224,6 +250,7 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     });
     let discovery = discovery::page(
         &entry, &page_back, &podcast_menu, &pages, status, store.clone(), artwork.clone(), playback.clone(), toast.clone(),
+        follow_toast,
         back_to_following,
     );
     pages.add_named(&discovery.widget, Some("discover"));

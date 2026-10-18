@@ -141,6 +141,41 @@ impl FollowingStore {
         Ok(changed)
     }
 
+    /// Keep a feed's own cover ahead of directory artwork for followed shows.
+    pub fn prefer_feed_artworks(&self, covers: &[(String, String)]) -> Result<(), String> {
+        if covers.is_empty() { return Ok(()) }
+        let transaction = self.connection.unchecked_transaction()
+            .map_err(|error| format!("Could not update podcast artwork: {error}"))?;
+        let mut changed = false;
+        for (feed_url, cover_url) in covers {
+            if !(cover_url.starts_with("https://") || cover_url.starts_with("http://")) {
+                continue;
+            }
+            let current: Option<String> = transaction.query_row(
+                "SELECT artwork_urls FROM following WHERE feed_url = ?1",
+                [feed_url],
+                |row| row.get(0),
+            ).optional().map_err(|error| format!("Could not read podcast artwork: {error}"))?;
+            let Some(current) = current else { continue };
+            let mut urls: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+            if urls.first().is_some_and(|url| url == cover_url) {
+                continue;
+            }
+            urls.retain(|url| url != cover_url);
+            urls.insert(0, cover_url.clone());
+            urls.truncate(4);
+            let artwork = serde_json::to_string(&urls).map_err(|error| error.to_string())?;
+            transaction.execute(
+                "UPDATE following SET artwork_urls = ?2 WHERE feed_url = ?1",
+                params![feed_url, artwork],
+            ).map_err(|error| format!("Could not save podcast artwork: {error}"))?;
+            changed = true;
+        }
+        transaction.commit().map_err(|error| format!("Could not save podcast artwork: {error}"))?;
+        if changed { self.notify(); }
+        Ok(())
+    }
+
     /// Add an OPML list in one transaction and refresh the Following grid once.
     pub fn add_many(&self, shows: &[Show]) -> Result<Vec<Show>, String> {
         let transaction = self.connection.unchecked_transaction()
@@ -236,6 +271,43 @@ impl FollowingStore {
             self.notify();
         }
         Ok(added)
+    }
+
+    pub fn mark_played_and_reset(&self, feed_url: &str, episode_ids: &[String]) -> Result<usize, String> {
+        let transaction = self.connection.unchecked_transaction()
+            .map_err(|error| format!("Could not begin updating played episodes: {error}"))?;
+        let mut added = 0;
+        let mut reset = 0;
+        {
+            let mut mark = transaction.prepare(
+                "INSERT OR IGNORE INTO played_episodes (feed_url, episode_id) VALUES (?1, ?2)",
+            ).map_err(|error| format!("Could not prepare played episodes: {error}"))?;
+            let mut clear_position = transaction.prepare(
+                "DELETE FROM playback_positions WHERE feed_url = ?1 AND episode_id = ?2",
+            ).map_err(|error| format!("Could not prepare progress reset: {error}"))?;
+            for episode_id in episode_ids {
+                added += mark.execute(params![feed_url, episode_id])
+                    .map_err(|error| format!("Could not mark episodes as played: {error}"))?;
+                reset += clear_position.execute(params![feed_url, episode_id])
+                    .map_err(|error| format!("Could not reset listening progress: {error}"))?;
+            }
+        }
+        transaction.commit()
+            .map_err(|error| format!("Could not save played episodes: {error}"))?;
+        if added > 0 || reset > 0 {
+            self.notify();
+        }
+        Ok(added)
+    }
+
+    pub fn mark_all_unplayed(&self, feed_url: &str) -> Result<usize, String> {
+        let removed = self.connection
+            .execute("DELETE FROM played_episodes WHERE feed_url = ?1", [feed_url])
+            .map_err(|error| format!("Could not mark episodes as unplayed: {error}"))?;
+        if removed > 0 {
+            self.notify();
+        }
+        Ok(removed)
     }
 
     pub fn played_ids(&self, feed_url: &str) -> Result<HashSet<String>, String> {
