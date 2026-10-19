@@ -6,7 +6,6 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use super::artwork::ArtworkLoader;
 use super::episode::{parse_date, show_dialog};
 use crate::cache;
 use crate::discovery_service::{self, Episode, Show};
@@ -39,7 +38,6 @@ struct EpisodeList {
     groups: Vec<EpisodeGroup>,
     rows: HashMap<(String, String), RowRecord>,
     status: Option<gtk::Widget>,
-    artwork: Rc<ArtworkLoader>,
     playback: Rc<PlaybackController>,
     toast: Rc<dyn Fn(&str)>,
     open_show: Rc<dyn Fn(Show)>,
@@ -48,7 +46,6 @@ struct EpisodeList {
 impl EpisodeList {
     fn new(
         content: &gtk::Box,
-        artwork: Rc<ArtworkLoader>,
         playback: Rc<PlaybackController>,
         toast: Rc<dyn Fn(&str)>,
         open_show: Rc<dyn Fn(Show)>,
@@ -70,7 +67,6 @@ impl EpisodeList {
             list.set_visible(false);
             let details = Rc::new(RefCell::new(HashMap::<usize, RowDetails>::new()));
             let details_for_dialog = details.clone();
-            let artwork_for_dialog = artwork.clone();
             let playback_for_dialog = playback.clone();
             let toast_for_dialog = toast.clone();
             list.connect_row_activated(move |_, row| {
@@ -78,7 +74,7 @@ impl EpisodeList {
                 if let Some((show, episode, over)) = details_for_dialog.borrow().get(&key) {
                     if !over.get() {
                         show_dialog(
-                            row, show, episode, &artwork_for_dialog,
+                            row, show, episode,
                             playback_for_dialog.clone(), toast_for_dialog.clone(),
                         );
                     }
@@ -90,7 +86,7 @@ impl EpisodeList {
         }
         Self {
             content: content.clone(), groups, rows: HashMap::new(), status: None,
-            artwork, playback, toast, open_show,
+            playback, toast, open_show,
         }
     }
 
@@ -129,7 +125,7 @@ impl EpisodeList {
             .filter(|row| row.group == group_index && row.published >= timestamp)
             .count() as i32;
         let (row, over, _) = super::episode_row::create(
-            &saved.show, &saved.episode, &self.artwork, &self.playback,
+            &saved.show, &saved.episode, &self.playback,
             &self.toast, Some(self.open_show.clone()),
         );
         group.details.borrow_mut().insert(
@@ -209,7 +205,6 @@ pub(super) struct NewEpisodesPage {
 
 pub(super) fn page(
     store: Rc<FollowingStore>,
-    artwork: Rc<ArtworkLoader>,
     playback: Rc<PlaybackController>,
     toast: Rc<dyn Fn(&str)>,
     busy: Rc<dyn Fn(bool)>,
@@ -228,7 +223,7 @@ pub(super) fn page(
         .child(&clamp)
         .build();
     let list = Rc::new(RefCell::new(EpisodeList::new(
-        &content, artwork, playback, toast.clone(), open_show,
+        &content, playback, toast.clone(), open_show,
     )));
     let restored_once = Rc::new(Cell::new(false));
     let load_generation = Rc::new(Cell::new(0u64));

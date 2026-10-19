@@ -2,13 +2,11 @@ use adw::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::artwork::ArtworkLoader;
 use crate::discovery_service::{Episode, Show};
 use crate::playback::PlaybackController;
 
 pub(super) fn panel(
     playback: Rc<PlaybackController>,
-    artwork: Rc<ArtworkLoader>,
     toast: Rc<dyn Fn(&str)>,
     close: Rc<dyn Fn()>,
 ) -> gtk::Widget {
@@ -68,8 +66,8 @@ pub(super) fn panel(
             return;
         }
         seen_revision.set(playback.library_revision());
-        render_queue(&queue_content, &playback, &artwork, &toast);
-        render_history(&history_content, &playback, &artwork, &toast);
+        render_queue(&queue_content, &playback, &toast);
+        render_history(&history_content, &playback, &toast);
     });
     update();
     let update_on_change = update.clone();
@@ -89,7 +87,6 @@ fn clear(content: &gtk::Box) {
 fn render_queue(
     content: &gtk::Box,
     playback: &Rc<PlaybackController>,
-    artwork: &Rc<ArtworkLoader>,
     toast: &Rc<dyn Fn(&str)>,
 ) {
     clear(content);
@@ -108,7 +105,7 @@ fn render_queue(
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk::SelectionMode::None);
     for (index, item) in items.iter().enumerate() {
-        let row = entry_row(&item.show, &item.episode, artwork, None);
+        let row = entry_row(&item.show, &item.episode, None);
         let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
         style_icon_action(&play);
         play.set_tooltip_text(Some("Play now"));
@@ -134,7 +131,6 @@ fn render_queue(
 fn render_history(
     content: &gtk::Box,
     playback: &Rc<PlaybackController>,
-    artwork: &Rc<ArtworkLoader>,
     toast: &Rc<dyn Fn(&str)>,
 ) {
     clear(content);
@@ -168,7 +164,7 @@ fn render_history(
         let completed = gtk::glib::DateTime::from_unix_local(item.completed_at)
             .ok().and_then(|date| date.format("%e %b %Y").ok())
             .map(|date| date.trim().to_string());
-        let row = entry_row(&item.show, &item.episode, artwork, completed.as_deref());
+        let row = entry_row(&item.show, &item.episode, completed.as_deref());
         let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
         style_icon_action(&play);
         play.set_tooltip_text(Some("Play again"));
@@ -203,18 +199,12 @@ fn style_icon_action(button: &gtk::Button) {
     button.set_valign(gtk::Align::Center);
 }
 
-fn entry_row(show: &Show, episode: &Episode, artwork: &ArtworkLoader, date: Option<&str>) -> gtk::Box {
+fn entry_row(show: &Show, episode: &Episode, date: Option<&str>) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.set_margin_top(8);
     row.set_margin_bottom(8);
     row.set_margin_start(8);
     row.set_margin_end(8);
-    let mut candidates = Vec::new();
-    if let Some(url) = &episode.artwork_url {
-        candidates.push(url.clone());
-    }
-    candidates.extend(show.artwork_urls.iter().cloned());
-    row.append(&artwork.cached_widget(&candidates, 42));
     let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
     labels.set_hexpand(true);
     labels.set_valign(gtk::Align::Center);

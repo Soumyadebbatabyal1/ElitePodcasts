@@ -2,33 +2,44 @@ use adw::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::artwork::ArtworkLoader;
 use super::episode::{format_date, plain_description};
 use crate::discovery_service::{Episode, Show};
 use crate::playback::PlaybackController;
 
+pub(super) struct EpisodeRowControls {
+    pub row: gtk::ListBoxRow,
+    pub played: Rc<Cell<bool>>,
+    badge: gtk::Image,
+    play_icon: gtk::Image,
+    play_button: gtk::Button,
+    feed_url: String,
+    episode_id: String,
+}
+
+impl EpisodeRowControls {
+    pub fn set_played(&self, played: bool, playback: &PlaybackController) {
+        self.played.set(played);
+        self.badge.set_visible(played);
+        update_play_icon(
+            &self.play_icon, &self.play_button, playback,
+            &self.feed_url, &self.episode_id, played,
+        );
+    }
+}
+
 pub(super) fn create(
     show: &Show,
     episode: &Episode,
-    artwork: &Rc<ArtworkLoader>,
     playback: &Rc<PlaybackController>,
     toast: &Rc<dyn Fn(&str)>,
     go_to_show: Option<Rc<dyn Fn(Show)>>,
-) -> (gtk::ListBoxRow, Rc<Cell<bool>>, gtk::Image) {
+) -> (gtk::ListBoxRow, Rc<Cell<bool>>, EpisodeRowControls) {
     let row = gtk::ListBoxRow::new();
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     content.set_margin_top(13);
     content.set_margin_bottom(13);
     content.set_margin_start(12);
     content.set_margin_end(12);
-    let mut candidates = Vec::new();
-    if let Some(url) = &episode.artwork_url {
-        candidates.push(url.clone());
-    }
-    candidates.extend(show.artwork_urls.iter().cloned());
-    let cover = artwork.cached_widget(&candidates, 68);
-    cover.set_valign(gtk::Align::Center);
-    content.append(&cover);
     let text = gtk::Box::new(gtk::Orientation::Vertical, 3);
     text.set_hexpand(true);
     text.set_valign(gtk::Align::Center);
@@ -75,17 +86,19 @@ pub(super) fn create(
     play_button.set_sensitive(episode.audio_url.is_some());
     let feed_url = show.feed_url.clone();
     let episode_id = episode.id.clone();
-    update_play_icon(&play_icon, &play_button, playback, &feed_url, &episode_id);
+    let played = Rc::new(Cell::new(false));
+    update_play_icon(&play_icon, &play_button, playback, &feed_url, &episode_id, false);
     let weak_icon = play_icon.downgrade();
     let weak_button = play_button.downgrade();
     let weak_playback = Rc::downgrade(playback);
+    let played_for_watch = played.clone();
     playback.watch(move || {
         let (Some(icon), Some(button), Some(playback)) = (
             weak_icon.upgrade(), weak_button.upgrade(), weak_playback.upgrade(),
         ) else {
             return false;
         };
-        update_play_icon(&icon, &button, &playback, &feed_url, &episode_id);
+        update_play_icon(&icon, &button, &playback, &feed_url, &episode_id, played_for_watch.get());
         true
     });
     let over_play = Rc::new(Cell::new(false));
@@ -99,15 +112,27 @@ pub(super) fn create(
     let episode_for_play = episode.clone();
     let playback_for_play = playback.clone();
     let toast_for_play = toast.clone();
+    let played_for_play = played.clone();
     play_button.connect_clicked(move |_| {
-        if let Err(error) = playback_for_play.play_or_toggle(&show_for_play, &episode_for_play) {
+        let active = playback_for_play.is_current(&show_for_play.feed_url, &episode_for_play.id)
+            && playback_for_play.is_playing();
+        let result = if played_for_play.get() && !active {
+            playback_for_play.replay_episode(&show_for_play, &episode_for_play)
+        } else {
+            playback_for_play.play_or_toggle(&show_for_play, &episode_for_play)
+        };
+        if let Err(error) = result {
             toast_for_play(&error);
         }
     });
     content.append(&play_button);
     row.set_child(Some(&content));
     attach_context_menu(&row, show, episode, playback, toast, go_to_show);
-    (row, over_play, played_icon)
+    let controls = EpisodeRowControls {
+        row: row.clone(), played, badge: played_icon,
+        play_icon, play_button, feed_url: show.feed_url.clone(), episode_id: episode.id.clone(),
+    };
+    (row, over_play, controls)
 }
 
 fn attach_context_menu(
@@ -185,12 +210,21 @@ fn update_play_icon(
     playback: &PlaybackController,
     feed_url: &str,
     episode_id: &str,
+    played: bool,
 ) {
     let active = playback.is_current(feed_url, episode_id) && playback.is_playing();
     icon.set_icon_name(Some(if active {
         "media-playback-pause-symbolic"
+    } else if played {
+        "view-refresh-symbolic"
     } else {
         "media-playback-start-symbolic"
     }));
-    button.set_tooltip_text(Some(if active { "Pause episode" } else { "Play episode" }));
+    button.set_tooltip_text(Some(if active {
+        "Pause episode"
+    } else if played {
+        "Replay episode from the beginning"
+    } else {
+        "Play episode"
+    }));
 }

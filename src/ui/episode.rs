@@ -1,7 +1,6 @@
 use adw::prelude::*;
 use std::rc::Rc;
 
-use super::artwork::ArtworkLoader;
 use crate::discovery_service::{Episode, Show};
 use crate::playback::PlaybackController;
 
@@ -9,7 +8,6 @@ pub(super) fn show_dialog(
     parent: &gtk::ListBoxRow,
     show: &Show,
     episode: &Episode,
-    artwork: &ArtworkLoader,
     playback: Rc<PlaybackController>,
     toast: Rc<dyn Fn(&str)>,
 ) {
@@ -18,15 +16,7 @@ pub(super) fn show_dialog(
     body.set_margin_bottom(24);
     body.set_margin_start(24);
     body.set_margin_end(24);
-    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-    let mut candidates = Vec::new();
-    if let Some(url) = &episode.artwork_url {
-        candidates.push(url.clone());
-    }
-    candidates.extend(show.artwork_urls.iter().cloned());
-    heading.append(&artwork.cached_widget(&candidates, 88));
     let heading_text = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    heading_text.set_valign(gtk::Align::Center);
     let title = gtk::Label::new(Some(&episode.title));
     title.set_xalign(0.0);
     title.set_wrap(true);
@@ -40,8 +30,7 @@ pub(super) fn show_dialog(
     subtitle.set_xalign(0.0);
     subtitle.add_css_class("dim-label");
     heading_text.append(&subtitle);
-    heading.append(&heading_text);
-    body.append(&heading);
+    body.append(&heading_text);
     let description = plain_description(&episode.description);
     let summary = gtk::Label::new(Some(if description.is_empty() {
         "No episode description is available."

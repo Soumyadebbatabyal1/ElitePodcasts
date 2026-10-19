@@ -346,7 +346,7 @@ fn fetch_feed(url: &str) -> Result<FeedDetails, String> {
                 artwork_url,
             }
         })
-        .filter(|episode| !episode.title.is_empty())
+        .filter(|episode| !episode.title.is_empty() && episode.audio_url.is_some())
         .collect();
     let all_episode_ids = all_episodes.iter().map(|episode| episode.id.clone()).collect();
     let last_updated = all_episodes.iter()

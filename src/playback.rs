@@ -19,11 +19,7 @@ pub struct PlayingEpisode {
 
 impl PlayingEpisode {
     fn new(show: Show, episode: Episode) -> Self {
-        let mut artwork_urls = Vec::new();
-        if let Some(url) = &episode.artwork_url {
-            artwork_urls.push(url.clone());
-        }
-        artwork_urls.extend(show.artwork_urls.iter().cloned());
+        let artwork_urls = show.artwork_urls.clone();
         Self {
             show_title: show.title.clone(),
             feed_url: show.feed_url.clone(),

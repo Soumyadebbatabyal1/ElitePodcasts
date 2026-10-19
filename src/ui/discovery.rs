@@ -1,4 +1,5 @@
 use adw::prelude::*;
+use gtk::glib::variant::ToVariant;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -6,7 +7,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::artwork::ArtworkLoader;
-use super::episode::{format_date, plain_description, show_dialog as show_episode_dialog};
+use super::episode::{format_date, parse_date, plain_description, show_dialog as show_episode_dialog};
+use super::episode_row::EpisodeRowControls;
 use crate::data::{self, CATEGORIES};
 use crate::discovery_service::{self, Episode, FeedDetails, Show};
 use crate::following::FollowingStore;
@@ -16,6 +18,33 @@ pub(super) struct DiscoveryPage {
     pub widget: gtk::Widget,
     pub reset: Rc<dyn Fn()>,
     pub open_followed: Rc<dyn Fn(Show)>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct EpisodeViewPrefs {
+    played_only: bool,
+    oldest_first: bool,
+}
+
+struct EpisodeListControls {
+    list: gtk::ListBox,
+    empty: gtk::Label,
+    played_only: Rc<Cell<bool>>,
+    oldest_first: Rc<Cell<bool>>,
+}
+
+fn refresh_episode_visibility(
+    rows: &HashMap<String, EpisodeRowControls>,
+    controls: &EpisodeListControls,
+) {
+    let mut visible = 0;
+    for row in rows.values() {
+        let show = !controls.played_only.get() || row.played.get();
+        row.row.set_visible(show);
+        visible += usize::from(show);
+    }
+    controls.list.set_visible(visible > 0);
+    controls.empty.set_visible(visible == 0);
 }
 
 pub(super) fn page(
@@ -33,7 +62,8 @@ pub(super) fn page(
 ) -> DiscoveryPage {
     let view = gtk::Stack::new();
     view.set_vexpand(true);
-    let (website, selected_show, website_action, unsubscribe_action, mark_action, play_action, mark_menu) =
+    let (website, selected_show, website_action, unsubscribe_action, mark_action, play_action,
+        showing_action, sorting_action, mark_menu) =
         setup_podcast_menu(menu, store.clone(), toast.clone(), follow_toast.clone());
     let origin_following = Rc::new(Cell::new(false));
 
@@ -169,7 +199,40 @@ pub(super) fn page(
     episodes.set_margin_top(8);
     feed_content.append(&episodes);
     let current_episodes = Rc::new(RefCell::new(Vec::<String>::new()));
-    let played_badges = Rc::new(RefCell::new(HashMap::<String, gtk::Image>::new()));
+    let episode_rows = Rc::new(RefCell::new(HashMap::<String, EpisodeRowControls>::new()));
+    let episode_list_controls = Rc::new(RefCell::new(None::<EpisodeListControls>));
+    let episode_view_prefs = Rc::new(RefCell::new(HashMap::<String, EpisodeViewPrefs>::new()));
+    let selected_for_showing = selected_show.clone();
+    let prefs_for_showing = episode_view_prefs.clone();
+    let rows_for_showing = episode_rows.clone();
+    let list_for_showing = episode_list_controls.clone();
+    showing_action.connect_activate(move |action, parameter| {
+        let Some(value) = parameter.and_then(|parameter| parameter.str()) else { return };
+        if !matches!(value, "all" | "played") { return; }
+        action.set_state(&value.to_variant());
+        if let Some(show) = selected_for_showing.borrow().as_ref() {
+            prefs_for_showing.borrow_mut().entry(show.feed_url.clone()).or_default().played_only = value == "played";
+        }
+        if let Some(controls) = list_for_showing.borrow().as_ref() {
+            controls.played_only.set(value == "played");
+            refresh_episode_visibility(&rows_for_showing.borrow(), controls);
+        }
+    });
+    let selected_for_sorting = selected_show.clone();
+    let prefs_for_sorting = episode_view_prefs.clone();
+    let list_for_sorting = episode_list_controls.clone();
+    sorting_action.connect_activate(move |action, parameter| {
+        let Some(value) = parameter.and_then(|parameter| parameter.str()) else { return };
+        if !matches!(value, "newest" | "oldest") { return; }
+        action.set_state(&value.to_variant());
+        if let Some(show) = selected_for_sorting.borrow().as_ref() {
+            prefs_for_sorting.borrow_mut().entry(show.feed_url.clone()).or_default().oldest_first = value == "oldest";
+        }
+        if let Some(controls) = list_for_sorting.borrow().as_ref() {
+            controls.oldest_first.set(value == "oldest");
+            controls.list.invalidate_sort();
+        }
+    });
     let store_for_mark = store.clone();
     let selected_for_mark = selected_show.clone();
     let episode_ids_for_mark = current_episodes.clone();
@@ -278,7 +341,8 @@ pub(super) fn page(
     let weak_icon_for_played = latest_icon.downgrade();
     let selected_for_played = selected_show.clone();
     let ids_for_played = current_episodes.clone();
-    let badges_for_played = played_badges.clone();
+    let rows_for_played = episode_rows.clone();
+    let list_for_played = episode_list_controls.clone();
     let menu_for_played = mark_menu.clone();
     let all_for_played = all_played.clone();
     let latest_for_played = current_latest.clone();
@@ -291,7 +355,8 @@ pub(super) fn page(
             return false;
         };
         update_played_ui(
-            &store, &selected_for_played, &ids_for_played, &badges_for_played,
+            &store, &selected_for_played, &ids_for_played, &rows_for_played,
+            &list_for_played,
             &menu_for_played, &all_for_played, &latest_for_played,
             &icon, &button, &playback,
         );
@@ -382,7 +447,11 @@ pub(super) fn page(
         let details_button = details_button.clone();
         let current_feed = current_feed.clone();
         let current_episodes = current_episodes.clone();
-        let played_badges = played_badges.clone();
+        let episode_rows = episode_rows.clone();
+        let episode_list_controls = episode_list_controls.clone();
+        let episode_view_prefs = episode_view_prefs.clone();
+        let showing_action = showing_action.clone();
+        let sorting_action = sorting_action.clone();
         let all_played = all_played.clone();
         let mark_menu = mark_menu.clone();
         let mark_action = mark_action.clone();
@@ -405,6 +474,9 @@ pub(super) fn page(
             status(&show.title, false);
             *website.borrow_mut() = None;
             *selected_show.borrow_mut() = Some(show.clone());
+            let prefs = episode_view_prefs.borrow().get(&show.feed_url).copied().unwrap_or_default();
+            showing_action.set_state(&if prefs.played_only { "played" } else { "all" }.to_variant());
+            sorting_action.set_state(&if prefs.oldest_first { "oldest" } else { "newest" }.to_variant());
             website_action.set_enabled(false);
             unsubscribe_action.set_enabled(store.contains(&show.feed_url));
             menu.set_visible(true);
@@ -421,7 +493,8 @@ pub(super) fn page(
             details_button.set_sensitive(false);
             mark_action.set_enabled(false);
             current_episodes.borrow_mut().clear();
-            played_badges.borrow_mut().clear();
+            episode_rows.borrow_mut().clear();
+            episode_list_controls.borrow_mut().take();
             all_played.set(false);
             set_mark_menu_label(&mark_menu, "Mark All as Played");
             *current_latest.borrow_mut() = None;
@@ -460,7 +533,9 @@ pub(super) fn page(
             let current_feed = current_feed.clone();
             let mark_action = mark_action.clone();
             let current_episodes = current_episodes.clone();
-            let played_badges = played_badges.clone();
+            let episode_rows = episode_rows.clone();
+            let episode_list_controls = episode_list_controls.clone();
+            let episode_view_prefs = episode_view_prefs.clone();
             let all_played = all_played.clone();
             let mark_menu = mark_menu.clone();
             let status = status.clone();
@@ -515,7 +590,9 @@ pub(super) fn page(
                                 let current_feed = current_feed.clone();
                                 let mark_action = mark_action.clone();
                                 let current_episodes = current_episodes.clone();
-                                let played_badges = played_badges.clone();
+                                let episode_rows = episode_rows.clone();
+                                let episode_list_controls = episode_list_controls.clone();
+                                let episode_view_prefs = episode_view_prefs.clone();
                                 let all_played = all_played.clone();
                                 let mark_menu = mark_menu.clone();
                                 let artwork_for_feed = artwork.clone();
@@ -565,11 +642,13 @@ pub(super) fn page(
                                 update_latest_button(&latest_icon, &latest_button, active, false);
                                 show_feed(
                                     &feed_description, &full_description, &episodes, feed,
-                                    &show_for_feed, artwork_for_feed.clone(),
-                                    playback.clone(), toast, played_badges.clone(),
+                                    &show_for_feed,
+                                    playback.clone(), toast, episode_rows.clone(),
+                                    episode_list_controls.clone(), episode_view_prefs.clone(),
                                 );
                                 update_played_ui(
-                                    &store, &selected_show, &current_episodes, &played_badges,
+                                    &store, &selected_show, &current_episodes, &episode_rows,
+                                    &episode_list_controls,
                                     &mark_menu, &all_played, &current_latest,
                                     &latest_icon, &latest_button, &playback,
                                 );
@@ -1195,7 +1274,8 @@ fn update_played_ui(
     store: &FollowingStore,
     selected_show: &Rc<RefCell<Option<Show>>>,
     episode_ids: &Rc<RefCell<Vec<String>>>,
-    badges: &Rc<RefCell<HashMap<String, gtk::Image>>>,
+    rows: &Rc<RefCell<HashMap<String, EpisodeRowControls>>>,
+    list_controls: &Rc<RefCell<Option<EpisodeListControls>>>,
     mark_menu: &gtk::gio::Menu,
     all_played: &Cell<bool>,
     latest: &Rc<RefCell<Option<Episode>>>,
@@ -1213,8 +1293,11 @@ fn update_played_ui(
     let Ok(played) = store.played_ids(&show.feed_url) else {
         return;
     };
-    for (id, badge) in badges.borrow().iter() {
-        badge.set_visible(played.contains(id));
+    for (id, row) in rows.borrow().iter() {
+        row.set_played(played.contains(id), playback);
+    }
+    if let Some(controls) = list_controls.borrow().as_ref() {
+        refresh_episode_visibility(&rows.borrow(), controls);
     }
     let count = ids.iter().filter(|id| played.contains(*id)).count();
     let complete = count == ids.len();
@@ -1312,6 +1395,8 @@ type PodcastMenuState = (
     gtk::gio::SimpleAction,
     gtk::gio::SimpleAction,
     gtk::gio::SimpleAction,
+    gtk::gio::SimpleAction,
+    gtk::gio::SimpleAction,
     gtk::gio::Menu,
 );
 
@@ -1326,6 +1411,14 @@ fn setup_podcast_menu(
     model.append(Some("Open Website"), Some("podcast.website"));
     model.append(Some("Mark All as Played"), Some("podcast.mark-played"));
     model.append(Some("Play Latest Episode"), Some("podcast.play-latest"));
+    let showing_menu = gtk::gio::Menu::new();
+    showing_menu.append(Some("All Episodes"), Some("podcast.showing::all"));
+    showing_menu.append(Some("Played Episodes"), Some("podcast.showing::played"));
+    model.append_submenu(Some("Showing"), &showing_menu);
+    let sorting_menu = gtk::gio::Menu::new();
+    sorting_menu.append(Some("Newest to Oldest"), Some("podcast.sorting::newest"));
+    sorting_menu.append(Some("Oldest to Newest"), Some("podcast.sorting::oldest"));
+    model.append_submenu(Some("Sorting"), &sorting_menu);
     let actions = gtk::gio::Menu::new();
     actions.append(Some("Unsubscribe"), Some("podcast.unsubscribe"));
     model.append_section(None, &actions);
@@ -1356,6 +1449,16 @@ fn setup_podcast_menu(
     let play_action = gtk::gio::SimpleAction::new("play-latest", None);
     play_action.set_enabled(false);
     group.add_action(&play_action);
+    let showing_state = "all".to_variant();
+    let showing_action = gtk::gio::SimpleAction::new_stateful(
+        "showing", Some(showing_state.type_()), &showing_state,
+    );
+    group.add_action(&showing_action);
+    let sorting_state = "newest".to_variant();
+    let sorting_action = gtk::gio::SimpleAction::new_stateful(
+        "sorting", Some(sorting_state.type_()), &sorting_state,
+    );
+    group.add_action(&sorting_action);
     let unsubscribe = gtk::gio::SimpleAction::new("unsubscribe", None);
     unsubscribe.set_enabled(false);
     let selected_for_unsubscribe = selected_show.clone();
@@ -1374,7 +1477,8 @@ fn setup_podcast_menu(
     });
     group.add_action(&unsubscribe);
     button.insert_action_group("podcast", Some(&group));
-    (website, selected_show, website_action, unsubscribe, mark_action, play_action, model)
+    (website, selected_show, website_action, unsubscribe, mark_action, play_action,
+        showing_action, sorting_action, model)
 }
 
 fn format_search_date(raw: &str) -> Option<String> {
@@ -1405,10 +1509,11 @@ fn show_feed(
     episodes: &gtk::Box,
     feed: FeedDetails,
     show: &Show,
-    artwork: Rc<ArtworkLoader>,
     playback: Rc<PlaybackController>,
     toast: Rc<dyn Fn(&str)>,
-    played_badges: Rc<RefCell<HashMap<String, gtk::Image>>>,
+    episode_rows: Rc<RefCell<HashMap<String, EpisodeRowControls>>>,
+    list_controls: Rc<RefCell<Option<EpisodeListControls>>>,
+    view_prefs: Rc<RefCell<HashMap<String, EpisodeViewPrefs>>>,
 ) {
     let text = plain_description(&feed.description);
     *full_description.borrow_mut() = text.clone();
@@ -1421,36 +1526,63 @@ fn show_feed(
         description.set_text(&text);
     }
     description.set_visible(!text.is_empty());
-    if feed.episodes.is_empty() {
-        show_message(episodes, "No episodes found", "This RSS feed has no recent episodes to show.");
+    let all_episodes: Vec<_> = feed.episodes.into_iter()
+        .filter(|episode| episode.audio_url.is_some())
+        .collect();
+    if all_episodes.is_empty() {
+        show_message(episodes, "No playable episodes found", "This RSS feed has no public audio episodes to show.");
         return;
     }
     let list = gtk::ListBox::new();
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk::SelectionMode::None);
     list.set_activate_on_single_click(true);
-    let all_episodes = feed.episodes;
-    let mut over_play_buttons = Vec::with_capacity(all_episodes.len());
-    for episode in &all_episodes {
-        let (row, over_play, badge) = super::episode_row::create(show, episode, &artwork, &playback, &toast, None);
-        played_badges.borrow_mut().insert(episode.id.clone(), badge);
-        over_play_buttons.push(over_play);
+    let prefs = view_prefs.borrow().get(&show.feed_url).copied().unwrap_or_default();
+    let played_only = Rc::new(Cell::new(prefs.played_only));
+    let oldest_first = Rc::new(Cell::new(prefs.oldest_first));
+    let empty = gtk::Label::new(Some("No played episodes"));
+    empty.add_css_class("dim-label");
+    empty.set_margin_top(28);
+    empty.set_margin_bottom(28);
+    empty.set_visible(false);
+    *list_controls.borrow_mut() = Some(EpisodeListControls {
+        list: list.clone(), empty: empty.clone(), played_only, oldest_first: oldest_first.clone(),
+    });
+    let mut row_details = HashMap::new();
+    let mut sort_details = HashMap::new();
+    for (position, episode) in all_episodes.iter().enumerate() {
+        let (row, over_play, row_controls) = super::episode_row::create(show, episode, &playback, &toast, None);
+        let key = row.as_ptr() as usize;
+        row_details.insert(key, (episode.clone(), over_play.clone()));
+        let timestamp = parse_date(&episode.date).map(|date| date.to_unix()).unwrap_or(i64::MIN);
+        sort_details.insert(key, (timestamp, position));
+        episode_rows.borrow_mut().insert(episode.id.clone(), row_controls);
         list.append(&row);
     }
+    let sort_details = Rc::new(sort_details);
+    list.set_sort_func(move |first, second| {
+        let first = sort_details.get(&(first.as_ptr() as usize)).copied().unwrap_or((i64::MIN, usize::MAX));
+        let second = sort_details.get(&(second.as_ptr() as usize)).copied().unwrap_or((i64::MIN, usize::MAX));
+        if oldest_first.get() {
+            first.0.cmp(&second.0).then(first.1.cmp(&second.1)).into()
+        } else {
+            second.0.cmp(&first.0).then(first.1.cmp(&second.1)).into()
+        }
+    });
     let show_for_dialog = show.clone();
-    let artwork_for_dialog = artwork.clone();
+    let row_details = Rc::new(row_details);
     list.connect_row_activated(move |_, row| {
-        let index = row.index() as usize;
-        if !over_play_buttons.get(index).is_some_and(|over| over.get()) {
-            if let Some(episode) = all_episodes.get(index) {
+        if let Some((episode, over_play)) = row_details.get(&(row.as_ptr() as usize)) {
+            if !over_play.get() {
                 show_episode_dialog(
-                    row, &show_for_dialog, episode, &artwork_for_dialog,
+                    row, &show_for_dialog, episode,
                     playback.clone(), toast.clone(),
                 );
             }
         }
     });
     episodes.append(&list);
+    episodes.append(&empty);
 }
 
 fn categories(open_category: Rc<dyn Fn(String)>) -> gtk::Widget {

@@ -311,7 +311,7 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         }
     });
     let new_page = new_episodes::page(
-        store.clone(), artwork.clone(), playback.clone(), toast.clone(), episodes_busy,
+        store.clone(), playback.clone(), toast.clone(), episodes_busy,
         open_from_following.clone(),
     );
     let restore_new_episodes = new_page.restore.clone();
@@ -418,7 +418,7 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     });
     layout.append(&player::bar(playback.clone(), artwork.clone(), toast.clone(), open_panel));
     overlay.set_content(Some(&layout));
-    overlay.set_sidebar(Some(&library_panel::panel(playback, artwork, toast, close_panel)));
+    overlay.set_sidebar(Some(&library_panel::panel(playback, toast, close_panel)));
     toast_overlay.set_child(Some(&overlay));
     toast_overlay.upcast()
 }
