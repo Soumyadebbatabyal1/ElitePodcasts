@@ -1,0 +1,53 @@
+{
+  "app-id": "io.github.soumyadebbatabyal1.ElitePodcasts",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "50",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "elite-podcasts",
+  "finish-args": [
+    "--share=network",
+    "--share=ipc",
+    "--device=dri",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--socket=pulseaudio",
+    "--filesystem=xdg-music/Podcasts:create",
+    "--own-name=org.mpris.MediaPlayer2.elitepodcasts"
+  ],
+  "modules": [
+    {
+      "name": "elite-podcasts",
+      "buildsystem": "simple",
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+          "CARGO_HOME": "/run/build/elite-podcasts/cargo",
+          "CARGO_NET_OFFLINE": "true"
+        }
+      },
+      "build-commands": [
+        "install -Dm0644 cargo/config .cargo/config.toml",
+        "cargo build --offline --locked --release",
+        "install -Dm0755 target/release/elite-podcasts /app/bin/elite-podcasts",
+        "install -Dm0644 data/io.github.soumyadebbatabyal1.ElitePodcasts.desktop /app/share/applications/io.github.soumyadebbatabyal1.ElitePodcasts.desktop",
+        "install -Dm0644 data/io.github.soumyadebbatabyal1.ElitePodcasts.gschema.xml /app/share/glib-2.0/schemas/io.github.soumyadebbatabyal1.ElitePodcasts.gschema.xml",
+        "glib-compile-schemas /app/share/glib-2.0/schemas",
+        "install -Dm0644 data/io.github.soumyadebbatabyal1.ElitePodcasts.metainfo.xml /app/share/metainfo/io.github.soumyadebbatabyal1.ElitePodcasts.metainfo.xml",
+        "install -Dm0644 assets/icons/scalable/apps/io.github.soumyadebbatabyal1.ElitePodcasts.svg /app/share/icons/hicolor/scalable/apps/io.github.soumyadebbatabyal1.ElitePodcasts.svg",
+        "install -Dm0644 assets/icons/scalable/apps/io.github.soumyadebbatabyal1.ElitePodcasts-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.soumyadebbatabyal1.ElitePodcasts-symbolic.svg"
+      ],
+      "sources": [
+        { "type": "file", "path": "Cargo.toml" },
+        { "type": "file", "path": "Cargo.lock" },
+        { "type": "file", "path": "build.rs" },
+        { "type": "dir", "path": "src", "dest": "src" },
+        { "type": "dir", "path": "assets", "dest": "assets" },
+        { "type": "dir", "path": "data", "dest": "data" },
+        "cargo-sources.json"
+      ]
+    }
+  ]
+}

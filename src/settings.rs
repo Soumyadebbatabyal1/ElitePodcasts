@@ -1,6 +1,6 @@
 use adw::prelude::*;
 
-const SCHEMA_ID: &str = "io.github.elite.Podcasts";
+const SCHEMA_ID: &str = crate::app::APP_ID;
 pub const SPEEDS: [f64; 6] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 pub const SKIP_LENGTHS: [i32; 4] = [5, 10, 15, 30];
 
@@ -10,10 +10,14 @@ pub struct AppSettings {
 
 impl AppSettings {
     pub fn load() -> Result<Self, String> {
-        let source = gtk::gio::SettingsSchemaSource::from_directory(
-            env!("OUT_DIR"), None, false,
-        ).map_err(|error| format!("Could not load application settings: {error}"))?;
-        let schema = source.lookup(SCHEMA_ID, false)
+        let schema = if std::path::Path::new(env!("OUT_DIR")).join("gschemas.compiled").is_file() {
+            gtk::gio::SettingsSchemaSource::from_directory(env!("OUT_DIR"), None, false)
+                .map_err(|error| format!("Could not load application settings: {error}"))?
+                .lookup(SCHEMA_ID, false)
+        } else {
+            gtk::gio::SettingsSchemaSource::default()
+                .and_then(|source| source.lookup(SCHEMA_ID, false))
+        }
             .ok_or("The Elite Podcasts settings schema is missing")?;
         let values = gtk::gio::Settings::new_full(
             &schema, None::<&gtk::gio::SettingsBackend>, None,

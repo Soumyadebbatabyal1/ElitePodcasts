@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-  <gresource prefix="/io/github/elite/Podcasts">
+  <gresource prefix="/io/github/soumyadebbatabyal1/ElitePodcasts">
     <file>icons/scalable/actions/app-installed-symbolic.svg</file>
     <file>icons/scalable/actions/software-explore-symbolic.svg</file>
     <file>icons/scalable/actions/skip-backwards-10-symbolic.svg</file>
     <file>icons/scalable/actions/skip-forward-10-symbolic.svg</file>
     <file>icons/scalable/actions/speedometer-symbolic.svg</file>
-    <file>icons/scalable/apps/io.github.elite.Podcasts.svg</file>
-    <file>icons/scalable/apps/io.github.elite.Podcasts-symbolic.svg</file>
+    <file>icons/scalable/apps/io.github.soumyadebbatabyal1.ElitePodcasts.svg</file>
+    <file>icons/scalable/apps/io.github.soumyadebbatabyal1.ElitePodcasts-symbolic.svg</file>
   </gresource>
 </gresources>

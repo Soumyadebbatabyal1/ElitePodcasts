@@ -1,11 +1,13 @@
 use adw::prelude::*;
 
+pub const APP_ID: &str = "io.github.soumyadebbatabyal1.ElitePodcasts";
+
 pub fn run() {
     let bytes = gtk::glib::Bytes::from_static(include_bytes!(concat!(env!("OUT_DIR"), "/icons.gresource")));
     let resource = gtk::gio::Resource::from_data(&bytes).expect("invalid bundled player icons");
     gtk::gio::resources_register(&resource);
     let app = adw::Application::builder()
-        .application_id("io.github.elite.Podcasts")
+        .application_id(APP_ID)
         .build();
     app.connect_activate(|app| {
         if let Some(window) = app.active_window() {
@@ -14,13 +16,13 @@ pub fn run() {
         }
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::IconTheme::for_display(&display)
-                .add_resource_path("/io/github/elite/Podcasts/icons");
+                .add_resource_path("/io/github/soumyadebbatabyal1/ElitePodcasts/icons");
         }
-        gtk::Window::set_default_icon_name("io.github.elite.Podcasts");
+        gtk::Window::set_default_icon_name(APP_ID);
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Elite Podcasts")
-            .icon_name("io.github.elite.Podcasts")
+            .icon_name(APP_ID)
             .default_width(1200)
             .default_height(680)
             .build();

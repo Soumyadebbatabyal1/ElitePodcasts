@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
-  <schema id="io.github.elite.Podcasts" path="/io/github/elite/Podcasts/">
+  <schema id="io.github.soumyadebbatabyal1.ElitePodcasts" path="/io/github/soumyadebbatabyal1/ElitePodcasts/">
     <key name="appearance" type="s">
       <default>'system'</default>
       <summary>Application appearance</summary>

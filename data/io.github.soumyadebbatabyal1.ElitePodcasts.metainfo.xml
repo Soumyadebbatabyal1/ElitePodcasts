@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.soumyadebbatabyal1.ElitePodcasts</id>
+  <name>Elite Podcasts</name>
+  <summary>Discover, follow, and listen to podcasts</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>Find shows through search, charts, and categories, then follow them to keep their latest episodes together. Stream or download episodes, save favorites, and pick up where you left off.</p>
+    <p>Elite Podcasts uses a native GNOME interface with playback speed controls, an episode queue, listening history, and desktop media controls. Import or export subscriptions with OPML.</p>
+  </description>
+  <launchable type="desktop-id">io.github.soumyadebbatabyal1.ElitePodcasts.desktop</launchable>
+  <url type="homepage">https://github.com/Soumyadebbatabyal1/ElitePodcasts</url>
+  <url type="bugtracker">https://github.com/Soumyadebbatabyal1/ElitePodcasts/issues</url>
+  <developer id="io.github.soumyadebbatabyal1">
+    <name>Elite Podcasts contributors</name>
+  </developer>
+  <releases>
+    <release version="0.1.0" date="2026-10-20">
+      <description><p>Initial Flatpak packaging</p></description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

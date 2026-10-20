@@ -13,7 +13,7 @@ const FEED_CACHE_AGE: Duration = Duration::from_secs(15 * 60);
 const FEED_CACHE_KIND: &str = "feeds-v4";
 const OLD_FEED_CACHE_KIND: &str = "feeds-v3";
 const OLDEST_FEED_CACHE_KIND: &str = "feeds-v2";
-pub(crate) const USER_AGENT: &str = "ElitePodcasts/0.1 (io.github.elite.Podcasts; native GNOME podcast app)";
+pub(crate) const USER_AGENT: &str = "ElitePodcasts/0.1 (io.github.soumyadebbatabyal1.ElitePodcasts; native GNOME podcast app)";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Show {

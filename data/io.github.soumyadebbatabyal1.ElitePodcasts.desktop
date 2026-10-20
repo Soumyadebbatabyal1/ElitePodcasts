@@ -3,6 +3,6 @@ Type=Application
 Name=Elite Podcasts
 Comment=Discover and listen to podcasts
 Exec=elite-podcasts
-Icon=io.github.elite.Podcasts
+Icon=io.github.soumyadebbatabyal1.ElitePodcasts
 Terminal=false
 Categories=AudioVideo;Audio;Network;

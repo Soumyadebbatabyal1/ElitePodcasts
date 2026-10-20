@@ -1,71 +1,66 @@
 # Elite Podcasts
 
-Elite Podcasts is a native GTK4 and libadwaita podcast application for GNOME. Search uses Apple's public podcast directory, category browsing uses its podcast charts, and selecting a result shows recent episodes from its public RSS feed. The window uses a Settings-style sidebar, a current-page title, and a loading spinner beside that title. It opens at 960×680 and has a 700×520 minimum size. Following and playback positions are saved locally in SQLite. Audio playback uses GStreamer.
+Elite Podcasts is a native GNOME app for discovering, following, and listening to podcasts. It uses GTK4, libadwaita, and GStreamer. Discovery uses Apple's public podcast directory and charts; episodes come from each show's public RSS feed. No API key is needed.
 
-## Requirements
+## Features
 
-- Rust stable and Cargo (Rust 1.78 or newer)
-- GTK 4.8 or newer development files
-- libadwaita development files (1.7 or newer)
-- GStreamer runtime plugins and development files
-- A C compiler and `pkg-config`
+- Browse categories, Top Shows, and recommendations, or search for a show.
+- Follow shows and see their new episodes in one place. Refresh New Episodes when you choose; opening the page does not fetch every feed again.
+- Play, pause, seek, skip, adjust speed, and control playback from GNOME media controls. The last episode and position are restored when the app reopens.
+- Queue episodes, star them, mark them played, and review listening history.
+- Download episodes to `Music/Podcasts`, with progress and cancellation in the Downloaded page.
+- Import and export subscriptions as OPML.
+- Use the system light or dark appearance, or choose an override in Settings.
 
-On Fedora, the relevant packages are `rust`, `cargo`, `gtk4-devel`, `libadwaita-devel`, `gstreamer1-devel`, `gstreamer1-plugins-base`, `gstreamer1-plugins-good`, and `gcc`.
+The app stores subscriptions, playback state, and history locally in SQLite. Search results, feeds, and artwork are cached locally. The playback queue itself is cleared when the app closes.
 
-## Build and run
+## Install with Flatpak
+
+The Flatpak application ID is `io.github.soumyadebbatabyal1.ElitePodcasts`. It matches the [source repository](https://github.com/Soumyadebbatabyal1/ElitePodcasts); the name shown in GNOME remains **Elite Podcasts**.
+
+Until a release is published, build the Flatpak from this checkout. Install `flatpak-builder`, add the Flathub remote, and install the GNOME 50 SDK and Rust extension:
 
 ```sh
-cargo run
+sudo dnf install flatpak-builder
+flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user flathub org.gnome.Sdk//50 org.freedesktop.Sdk.Extension.rust-stable//25.08
+flatpak-builder --user --install --force-clean --disable-rofiles-fuse .flatpak-build io.github.soumyadebbatabyal1.ElitePodcasts.json
+flatpak run io.github.soumyadebbatabyal1.ElitePodcasts
 ```
 
-Cargo downloads the Rust crates on the first build. Close any older Elite Podcasts window before launching a newly built version; the application ID allows only one running instance.
+The Flatpak can access the network for podcast data and audio, the audio server for playback, and `Music/Podcasts` for downloads. OPML import and export use the desktop file chooser. Flatpak stores the app's other data separately from a native Cargo installation, so subscriptions and playback state do not automatically transfer between them.
 
-Select the search button, type a podcast name, and press Enter. Search uses Apple's public podcast directory and needs no API key. Category tiles open a podcast list with native libadwaita tabs for All and the available subcategories. Each tab loads its list when first selected and keeps it ready while you browse that category. Climate offers Earth Sciences and Nature because Apple does not have a separate Climate category. Chart entries are looked up in the directory to obtain public RSS URLs, so shows without one are omitted. Search and category results are cached for 30 minutes, with saved results used if the service is unavailable. Network requests run in worker threads.
+## Build from source
 
-Search and category results use native Adwaita boxed lists with artwork, show and publisher names, and an available date above the title. Dates use the local day: Today, Yesterday, day and month, or a year when needed. Exact title matches appear first. A search briefly outlines its first result in the accent color. Select a row to see a podcast cover, description, and up to 20 recent episodes from its public RSS feed. Use Add to follow a show; the button becomes green and says Added. The Following page displays a responsive cover grid, and its covers open the podcast page. The podcast page shortens long descriptions with an inline More link that opens a native dialog. Beneath it, the headphones button and podcast menu can mark the loaded episodes as played, and the circled tick unsubscribes. The podcast menu can also open the show's website.
+Install stable Rust and Cargo, GTK4 development files (4.8 or newer), libadwaita development files (1.7 or newer), GStreamer development files and plugins, a C compiler, `pkg-config`, `glib-compile-resources`, and `glib-compile-schemas`. On Fedora, the main packages are `rust`, `cargo`, `gtk4-devel`, `libadwaita-devel`, `gstreamer1-devel`, `gstreamer1-plugins-base`, `gstreamer1-plugins-good`, and `gcc`.
 
-Each episode row has a date, title, a short description, and a play button on the right. Select the row to read the full episode description in a native dialog. The row's play button and the podcast page's play button stream audio from the RSS enclosure. A player bar spans the bottom of the window with play/pause, configurable skips, seeking, time, and speeds from 0.75× to 2×. It stays visible across pages and hides artwork and titles at narrow widths. Playback positions are saved periodically, when pausing or switching episodes, and when closing the app. Reopening the app restores the last episode and selected speed in a paused player bar; pressing Play resumes near the saved position. Completing an episode marks it as played and clears it from the next launch's player bar. Audio streaming requires a working network connection and a codec supported by the installed GStreamer plugins.
+```sh
+cargo run --locked
+```
 
-Right-click an episode row to Play Now or Queue Up. Those two actions are omitted for the current episode while it is playing or paused; starring remains available. New Episodes rows also offer Go to Show. Direct playback leaves the queue in place; after the current episode finishes, queued episodes play in order. The queue stays in memory and clears when the app closes. The sidebar button beside playback speed opens a native sliding Queue and History panel; a header button opens it when no episode is playing. The panel slides over the player. Completed episodes are saved to SQLite History until Clear History is used. Both tabs use native lists and provide controls to play entries again or remove queued entries.
+The first Cargo build downloads dependencies. Close any running Elite Podcasts window before launching a different build, since the application ID allows one running instance.
 
-The sidebar also has Starred, Downloaded, and History pages. Right-click an episode to star it, mark it played, or download it. Marking an individual episode played clears that episode's saved listening progress immediately; the bulk action still asks for confirmation. A Starred page groups saved episodes by podcast artwork, then opens the podcast view with only its starred episodes. Downloads are saved under `Music/Podcasts`, indexed in SQLite, and playable from the Downloaded page. A short native toast shows overall download progress; the Downloaded page shows each active transfer and its Cancel button. Cancel removes incomplete audio, and Remove Download deletes a finished file. History groups completed episodes by completion date, while the player panel keeps its separate Queue and History tabs.
+## Flatpak maintenance
 
-GNOME media controls use MPRIS on the session D-Bus. They show the current episode title, podcast, artwork, duration, position, and speed, and can play, pause, stop, seek, or advance to the next queued episode. Previous is unavailable because the app does not yet keep a previous-track queue. The MPRIS name is `org.mpris.MediaPlayer2.elitepodcasts`.
+The Flatpak manifest is [`io.github.soumyadebbatabyal1.ElitePodcasts.json`](io.github.soumyadebbatabyal1.ElitePodcasts.json). It builds with `cargo --offline --locked`; [`cargo-sources.json`](cargo-sources.json) lists the exact crates in `Cargo.lock`. Whenever the lockfile changes, regenerate that file with [Flatpak's Cargo source generator](https://github.com/flatpak/flatpak-builder-tools/tree/master/cargo):
 
-New Episodes reads the latest 20 entries from each followed RSS feed only when you choose Check for New Episodes from its page menu or press Ctrl+R. Navigating away and back keeps the current list without fetching feeds again; reopening the app loads the saved list in a worker. A manual refresh keeps existing rows visible and adds results as individual feeds finish, so a slow feed does not hold up faster ones. It shows playable, unplayed episodes in local-date groups: Today, Yesterday, This week, This month, and Older. Rows use the same artwork, date, title, description, and play/pause button as the podcast page. Select a row for the same episode details dialog used on podcast pages. The page menu can open Keyboard Shortcuts with Ctrl+? and show About Elite Podcasts. Checking again removes episodes that have since been played. Feeds that fail to load do not prevent other followed shows from appearing.
+```sh
+curl -LO https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
+```
 
-Import Shows (Ctrl+O) reads podcast RSS subscriptions from an OPML file, skips duplicates, and adds the new shows to Following. Covers and missing titles are filled from RSS feeds in the background; unavailable feeds remain followed with their OPML titles. Export Shows (Ctrl+E) saves the current Following list as OPML 2.0. Both commands use native file dialogs and show an in-app result message. OPML transfers subscriptions, not listening history or downloaded audio.
-
-The pocket player application icon lives in `assets/icons/scalable/apps/`, with a matching symbolic icon. The desktop entry in `data/` references it by application ID; packaging must install the scalable icon in the hicolor icon theme. The 10-second skip and speedometer symbolic icons in `assets/icons/` come from [GNOME Audio Player (Decibels)](https://gitlab.gnome.org/GNOME/decibels), licensed under GPL-3.0. They are bundled as application resources so GTK can recolor them with the active theme.
-
-The main menu opens native Settings (Ctrl+,). Appearance follows the system by default, with Light and Dark overrides. Playback settings choose the speed for a new episode and backward and forward skip lengths; a restored or already playing episode keeps its selected speed. Storage can clear this app's disk cache after confirmation. Following, history, and resume positions remain in SQLite. Settings persist through GSettings; `cargo build` compiles the project-local schema into the build directory.
-
-Images are loaded and decoded by four background workers, with alternate artwork URLs tried only when the preferred one fails. Text and controls appear without waiting for artwork. Decoded images become shared GTK textures, so opening another page does not resize each cover again. Images use a bounded in-memory cache and a persistent disk cache under the standard user cache directory, with a symbolic placeholder while loading or when unavailable. RSS feed data is also cached: fresh cached feeds load immediately for 15 minutes, and older cached feeds load immediately while a background refresh updates the cache. RSS feeds are limited to 32 MB; larger feeds show an explicit size error.
-
-Search and category browsing need an internet connection on their first request. No API credentials are required.
+The current manifest uses the checked-out source tree for local builds. Before a Flathub submission, pin its application source to a public release tag and commit, publish an up-to-date screenshot, and add its permanent URL to the AppStream metadata in `data/`. Flatpak updates are delivered by publishing a new release and updating the pinned source and release metadata in the Flathub manifest. The application ID stays the same across updates.
 
 ## Project layout
 
-- `src/app.rs` starts the libadwaita application and creates its window.
-- `src/ui/` contains the adaptive sidebar, page header, discovery views, New Episodes page, shared episode rows and dialog, Queue and History panel, nine-category grid, and artwork loader.
-- `src/data.rs` defines the category tiles and subcategory genre IDs.
-- `src/discovery_service.rs` searches Apple's public podcast directory, loads category charts, and reads public RSS feeds.
-- `src/cache.rs` stores fetched directory responses, RSS details, the New Episodes snapshot, and artwork in the user cache directory.
-- `src/following.rs` saves followed podcasts in SQLite under the standard user data directory.
-- `src/opml.rs` reads and writes portable OPML subscription lists; `src/ui/opml_io.rs` provides the native file dialogs.
-- `src/playback.rs` manages GStreamer streaming and restores the last episode, speed, and resume position; `src/ui/player.rs` builds the adaptive player bar.
-- `src/mpris.rs` connects that playback controller to GNOME's D-Bus media controls.
-- `src/settings.rs`, `src/ui/settings.rs`, and `data/io.github.elite.Podcasts.gschema.xml` define, save, and present application settings.
-- `assets/artwork/` retains original local SVG placeholder art for a possible future feature; the carousel is currently hidden.
-- `assets/style.css` adds restrained styling; the accent CSS files use Apple blue in light and dark mode.
-
-## Technology choices
-
-The app uses GTK4 through gtk4-rs 0.9, libadwaita through libadwaita-rs 0.7, and GStreamer through gstreamer-rs 0.23. The discovery client uses ureq 2.12 and serde; SHA-1 is used for cache file names, download file names, and stable MPRIS track paths. RSS is parsed with roxmltree. Following, downloads, and resume positions use rusqlite with bundled SQLite, so no system SQLite development package is needed. MPRIS and GSettings use GIO support already included with GTK.
-
-The proposed application ID `io.github.elite.Podcasts` is temporary. Confirm a final reverse-DNS ID before packaging or publishing.
-
-Trending Podcasts, Top Shows, and Recently Updated remain for later passes.
+- `src/app.rs` starts the application.
+- `src/ui/` contains the native interface, including Discover, the library pages, episode dialogs, player, and settings.
+- `src/data.rs` defines categories and subcategories.
+- `src/discovery_service.rs` handles podcast discovery and public RSS feeds.
+- `src/playback.rs` and `src/mpris.rs` handle playback and GNOME media controls.
+- `src/following.rs`, `src/downloads.rs`, and `src/cache.rs` store local state and downloads.
+- `data/` contains the desktop entry, settings schema, and AppStream metadata.
+- `assets/icons/` contains the application icon and symbolic interface icons. The skip and speedometer icons are from [GNOME Audio Player (Decibels)](https://gitlab.gnome.org/GNOME/decibels), licensed under GPL-3.0.
 
 ## License
 

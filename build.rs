@@ -21,8 +21,8 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed=assets/icons/scalable/actions/{icon}");
     }
-    println!("cargo:rerun-if-changed=assets/icons/scalable/apps/io.github.elite.Podcasts.svg");
-    println!("cargo:rerun-if-changed=assets/icons/scalable/apps/io.github.elite.Podcasts-symbolic.svg");
+    println!("cargo:rerun-if-changed=assets/icons/scalable/apps/io.github.soumyadebbatabyal1.ElitePodcasts.svg");
+    println!("cargo:rerun-if-changed=assets/icons/scalable/apps/io.github.soumyadebbatabyal1.ElitePodcasts-symbolic.svg");
     let schemas = Command::new("glib-compile-schemas")
         .args(["--strict", "--targetdir"])
         .arg(&out_dir)
@@ -30,5 +30,5 @@ fn main() {
         .status()
         .expect("glib-compile-schemas is required to bundle application settings");
     assert!(schemas.success(), "could not compile application settings");
-    println!("cargo:rerun-if-changed=data/io.github.elite.Podcasts.gschema.xml");
+    println!("cargo:rerun-if-changed=data/io.github.soumyadebbatabyal1.ElitePodcasts.gschema.xml");
 }
