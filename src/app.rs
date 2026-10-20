@@ -19,11 +19,20 @@ pub fn run() {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Elite Podcasts")
-            .default_width(960)
+            .default_width(1200)
             .default_height(680)
             .build();
         window.set_size_request(700, 520);
-        window.set_content(Some(&crate::ui::window_content(&window, app)));
+        let content = match crate::settings::AppSettings::load() {
+            Ok(settings) => crate::ui::window_content(&window, app, std::rc::Rc::new(settings)),
+            Err(message) => adw::StatusPage::builder()
+                .icon_name("dialog-error-symbolic")
+                .title("Could not load Elite Podcasts settings")
+                .description(&message)
+                .build()
+                .upcast(),
+        };
+        window.set_content(Some(&content));
         window.present();
     });
     app.run();

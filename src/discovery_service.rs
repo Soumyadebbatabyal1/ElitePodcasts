@@ -75,6 +75,21 @@ struct ChartResponse {
 }
 
 #[derive(Deserialize)]
+struct TopChartResponse {
+    feed: TopChartFeed,
+}
+
+#[derive(Deserialize)]
+struct TopChartFeed {
+    results: Vec<TopChartEntry>,
+}
+
+#[derive(Deserialize)]
+struct TopChartEntry {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct ChartFeed {
     #[serde(default)]
     entry: Vec<ChartEntry>,
@@ -189,6 +204,10 @@ fn artwork_candidates(urls: impl IntoIterator<Item = Option<String>>) -> Vec<Str
 pub fn category(parent: &str, selected: &str) -> Result<Vec<Show>, String> {
     let genre = data::category_genre(parent, selected)
         .ok_or_else(|| "This category is unavailable.".to_string())?;
+    category_by_genre(genre)
+}
+
+fn category_by_genre(genre: u32) -> Result<Vec<Show>, String> {
     let cache_key = genre.to_string();
     if let Some(cached) = cache::read_json("apple-chart-category-v1", &cache_key, Some(DIRECTORY_CACHE_AGE)) {
         return Ok(cached);
@@ -199,6 +218,110 @@ pub fn category(parent: &str, selected: &str) -> Result<Vec<Show>, String> {
             Ok(shows)
         }
         Err(error) => cache::read_json("apple-chart-category-v1", &cache_key, None).ok_or(error),
+    }
+}
+
+pub fn top_shows_us() -> Result<Vec<Show>, String> {
+    const CACHE_KIND: &str = "apple-top-shows-us-v1";
+    const CACHE_KEY: &str = "top-50";
+    if let Some(cached) = cache::read_json(CACHE_KIND, CACHE_KEY, Some(DIRECTORY_CACHE_AGE)) {
+        return Ok(cached);
+    }
+    let result = (|| {
+        let chart: TopChartResponse = agent()
+            .get("https://rss.marketingtools.apple.com/api/v2/us/podcasts/top/50/podcasts.json")
+            .call()
+            .map_err(|error| request_error("Apple's Top Shows chart", error))?
+            .into_json()
+            .map_err(|error| format!("Could not read Apple's Top Shows chart: {error}"))?;
+        let ids: Vec<u64> = chart.feed.results.into_iter()
+            .filter_map(|entry| entry.id.parse().ok())
+            .collect();
+        lookup_chart_shows(&ids)
+    })();
+    match result {
+        Ok(shows) => {
+            cache::write_json(CACHE_KIND, CACHE_KEY, &shows);
+            Ok(shows)
+        }
+        Err(error) => cache::read_json(CACHE_KIND, CACHE_KEY, None).ok_or(error),
+    }
+}
+
+pub fn recommended_shows(followed: &[Show]) -> Result<Vec<Show>, String> {
+    if followed.is_empty() { return Ok(Vec::new()) }
+    let mut key_parts: Vec<_> = followed.iter().map(|show| show.feed_url.as_str()).collect();
+    key_parts.sort_unstable();
+    let cache_key = key_parts.join("\n");
+    const CACHE_KIND: &str = "recommended-shows-v2";
+    if let Some(cached) = cache::read_json(CACHE_KIND, &cache_key, Some(DIRECTORY_CACHE_AGE)) {
+        return Ok(cached);
+    }
+    let result = (|| {
+        let mut counts = HashMap::<u32, usize>::new();
+        let mut uncached = Vec::new();
+        for show in followed {
+            if let Some(details) = cached_feed(&show.feed_url) {
+                count_categories(&details, &mut counts);
+            } else {
+                uncached.push(show);
+            }
+        }
+        if counts.is_empty() {
+            for show in uncached.into_iter().take(3) {
+                if let Ok(details) = feed(&show.feed_url) {
+                    count_categories(&details, &mut counts);
+                }
+            }
+        }
+        let mut categories: Vec<_> = counts.into_iter().collect();
+        categories.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        if categories.is_empty() {
+            return Err("Your followed shows have no available category information yet.".to_string());
+        }
+        let followed_urls: std::collections::HashSet<_> = followed.iter()
+            .map(|show| show.feed_url.as_str()).collect();
+        let mut candidate_lists = Vec::new();
+        for (genre, _) in categories.into_iter().take(3) {
+            if let Ok(candidates) = category_by_genre(genre) {
+                candidate_lists.push(candidates.into_iter());
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut recommendations = Vec::new();
+        loop {
+            let mut advanced = false;
+            for candidates in &mut candidate_lists {
+                if let Some(show) = candidates.next() {
+                    advanced = true;
+                    if !followed_urls.contains(show.feed_url.as_str()) && seen.insert(show.feed_url.clone()) {
+                        recommendations.push(show);
+                    }
+                }
+                if recommendations.len() >= 9 { break }
+            }
+            if recommendations.len() >= 9 || !advanced { break }
+        }
+        if recommendations.is_empty() {
+            Err("Could not find related shows with public RSS feeds.".to_string())
+        } else {
+            Ok(recommendations)
+        }
+    })();
+    match result {
+        Ok(shows) => {
+            cache::write_json(CACHE_KIND, &cache_key, &shows);
+            Ok(shows)
+        }
+        Err(error) => cache::read_json(CACHE_KIND, &cache_key, None).ok_or(error),
+    }
+}
+
+fn count_categories(details: &FeedDetails, counts: &mut HashMap<u32, usize>) {
+    for (category, genre) in data::RECOMMENDATION_GENRES {
+        if details.categories.iter().any(|name| name.eq_ignore_ascii_case(category)) {
+            *counts.entry(genre).or_default() += 1;
+        }
     }
 }
 
@@ -213,8 +336,12 @@ fn category_request(genre: u32) -> Result<Vec<Show>, String> {
     let ids: Vec<u64> = chart.feed.entry.into_iter()
         .filter_map(|entry| entry.id.attributes.id.parse().ok())
         .collect();
+    lookup_chart_shows(&ids)
+}
+
+fn lookup_chart_shows(ids: &[u64]) -> Result<Vec<Show>, String> {
     if ids.is_empty() {
-        return Err("This category has no available shows in Apple's chart.".into());
+        return Err("This chart has no available shows.".into());
     }
     let id_list = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     let lookup_url = format!("{LOOKUP_URL}?id={id_list}&country=us");
@@ -228,9 +355,9 @@ fn category_request(genre: u32) -> Result<Vec<Show>, String> {
         .filter_map(show_from_directory)
         .filter_map(|(id, show)| id.map(|id| (id, show)))
         .collect();
-    let shows: Vec<Show> = ids.into_iter().filter_map(|id| by_id.remove(&id)).collect();
+    let shows: Vec<Show> = ids.iter().filter_map(|id| by_id.remove(id)).collect();
     if shows.is_empty() {
-        Err("This category's shows have no public RSS feeds.".into())
+        Err("This chart's shows have no public RSS feeds.".into())
     } else {
         Ok(shows)
     }

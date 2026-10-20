@@ -4,21 +4,17 @@
   box-shadow: none;
 }
 
-.sidebar-pane {
-  background-color: alpha(currentColor, 0.04);
+.navigation-sidebar row image.sidebar-icon {
+  color: @window_fg_color;
+  opacity: 1;
 }
 
-.sidebar-row {
-  border-radius: 8px;
+.navigation-sidebar > row {
+  min-height: 32px;
 }
 
-.sidebar-row:selected {
-  background-color: alpha(@accent_bg_color, 0.16);
-}
-
-.sidebar-row:selected label,
-.sidebar-row:selected image {
-  color: @accent_bg_color;
+.navigation-sidebar row:disabled image.sidebar-icon {
+  opacity: var(--disabled-opacity);
 }
 
 .category-tile {
@@ -49,9 +45,19 @@
   font-weight: 700;
 }
 
+button.discovery-show-card {
+  padding: 0;
+  border-radius: 12px;
+}
+
 .podcast-artwork,
 .artwork-placeholder {
   border-radius: 10px;
+}
+
+.podcast-artwork.discovery-card-artwork,
+.discovery-card-artwork .artwork-placeholder {
+  border-radius: 0;
 }
 
 .artwork-placeholder {
@@ -117,6 +123,10 @@
 
 .episode-played-icon {
   color: alpha(currentColor, 0.7);
+}
+
+.episode-starred-icon {
+  color: @accent_color;
 }
 
 .podcast-round-action {

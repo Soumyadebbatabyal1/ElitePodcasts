@@ -2,6 +2,7 @@
 <gresources>
   <gresource prefix="/io/github/elite/Podcasts">
     <file>icons/scalable/actions/app-installed-symbolic.svg</file>
+    <file>icons/scalable/actions/software-explore-symbolic.svg</file>
     <file>icons/scalable/actions/skip-backwards-10-symbolic.svg</file>
     <file>icons/scalable/actions/skip-forward-10-symbolic.svg</file>
     <file>icons/scalable/actions/speedometer-symbolic.svg</file>

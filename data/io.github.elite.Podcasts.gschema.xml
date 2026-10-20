@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="io.github.elite.Podcasts" path="/io/github/elite/Podcasts/">
+    <key name="appearance" type="s">
+      <default>'system'</default>
+      <summary>Application appearance</summary>
+      <description>Follow the system color scheme, or use light or dark mode.</description>
+    </key>
+    <key name="default-speed" type="d">
+      <default>1.0</default>
+      <summary>Default playback speed</summary>
+      <description>The speed used when a different episode starts.</description>
+    </key>
+    <key name="skip-backward-seconds" type="i">
+      <default>10</default>
+      <summary>Backward skip length</summary>
+      <description>Seconds skipped by the backward button in the player.</description>
+    </key>
+    <key name="skip-forward-seconds" type="i">
+      <default>10</default>
+      <summary>Forward skip length</summary>
+      <description>Seconds skipped by the forward button in the player.</description>
+    </key>
+  </schema>
+</schemalist>

@@ -12,6 +12,17 @@ pub struct HistoryEntry {
     pub completed_at: i64,
 }
 
+pub struct StarredEpisode {
+    pub show: Show,
+    pub episode: Episode,
+}
+
+pub struct DownloadedEpisode {
+    pub show: Show,
+    pub episode: Episode,
+    pub path: std::path::PathBuf,
+}
+
 pub struct FollowingStore {
     connection: Connection,
     listeners: RefCell<Vec<Box<dyn Fn() -> bool>>>,
@@ -77,6 +88,23 @@ impl FollowingStore {
                 show_json TEXT NOT NULL,
                 episode_json TEXT NOT NULL,
                 completed_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
+            CREATE TABLE IF NOT EXISTS starred_episodes (
+                feed_url TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                show_json TEXT NOT NULL,
+                episode_json TEXT NOT NULL,
+                starred_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (feed_url, episode_id)
+            );
+            CREATE TABLE IF NOT EXISTS downloaded_episodes (
+                feed_url TEXT NOT NULL,
+                episode_id TEXT NOT NULL,
+                show_json TEXT NOT NULL,
+                episode_json TEXT NOT NULL,
+                path TEXT NOT NULL,
+                downloaded_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (feed_url, episode_id)
             );
             CREATE TABLE IF NOT EXISTS player_state (
                 id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -310,6 +338,22 @@ impl FollowingStore {
         Ok(removed)
     }
 
+    pub fn mark_unplayed(&self, feed_url: &str, episode_id: &str) -> Result<bool, String> {
+        let removed = self.connection.execute(
+            "DELETE FROM played_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+            params![feed_url, episode_id],
+        ).map_err(|error| format!("Could not mark episode as unplayed: {error}"))? > 0;
+        if removed { self.notify(); }
+        Ok(removed)
+    }
+
+    pub fn is_played(&self, feed_url: &str, episode_id: &str) -> bool {
+        self.connection.query_row(
+            "SELECT 1 FROM played_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+            params![feed_url, episode_id], |_| Ok(()),
+        ).is_ok()
+    }
+
     pub fn played_ids(&self, feed_url: &str) -> Result<HashSet<String>, String> {
         let mut statement = self.connection
             .prepare("SELECT episode_id FROM played_episodes WHERE feed_url = ?1")
@@ -432,6 +476,113 @@ impl FollowingStore {
         }).collect()
     }
 
+    pub fn is_starred(&self, feed_url: &str, episode_id: &str) -> bool {
+        self.connection.query_row(
+            "SELECT 1 FROM starred_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+            params![feed_url, episode_id], |_| Ok(()),
+        ).is_ok()
+    }
+
+    pub fn toggle_starred(&self, show: &Show, episode: &Episode) -> Result<bool, String> {
+        let starred = if self.is_starred(&show.feed_url, &episode.id) {
+            self.connection.execute(
+                "DELETE FROM starred_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+                params![show.feed_url, episode.id],
+            ).map_err(|error| format!("Could not remove episode star: {error}"))?;
+            false
+        } else {
+            let show_json = serde_json::to_string(show).map_err(|error| error.to_string())?;
+            let episode_json = serde_json::to_string(episode).map_err(|error| error.to_string())?;
+            self.connection.execute(
+                "INSERT INTO starred_episodes (feed_url, episode_id, show_json, episode_json) VALUES (?1, ?2, ?3, ?4)",
+                params![show.feed_url, episode.id, show_json, episode_json],
+            ).map_err(|error| format!("Could not star episode: {error}"))?;
+            true
+        };
+        self.notify();
+        Ok(starred)
+    }
+
+    pub fn starred(&self) -> Result<Vec<StarredEpisode>, String> {
+        let mut statement = self.connection.prepare(
+            "SELECT show_json, episode_json FROM starred_episodes ORDER BY starred_at DESC, rowid DESC",
+        ).map_err(|error| format!("Could not read starred episodes: {error}"))?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|error| format!("Could not read starred episodes: {error}"))?;
+        rows.map(|row| {
+            let (show, episode) = row.map_err(|error| error.to_string())?;
+            Ok(StarredEpisode {
+                show: serde_json::from_str(&show).map_err(|error| error.to_string())?,
+                episode: serde_json::from_str(&episode).map_err(|error| error.to_string())?,
+            })
+        }).collect()
+    }
+
+    pub fn is_downloaded(&self, feed_url: &str, episode_id: &str) -> bool {
+        self.connection.query_row(
+            "SELECT 1 FROM downloaded_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+            params![feed_url, episode_id], |_| Ok(()),
+        ).is_ok()
+    }
+
+    pub fn save_download(
+        &self,
+        show: &Show,
+        episode: &Episode,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let show_json = serde_json::to_string(show).map_err(|error| error.to_string())?;
+        let episode_json = serde_json::to_string(episode).map_err(|error| error.to_string())?;
+        self.connection.execute(
+            "INSERT INTO downloaded_episodes (feed_url, episode_id, show_json, episode_json, path)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(feed_url, episode_id) DO UPDATE SET
+               show_json = excluded.show_json,
+               episode_json = excluded.episode_json,
+               path = excluded.path,
+               downloaded_at = unixepoch()",
+            params![show.feed_url, episode.id, show_json, episode_json, path.to_string_lossy()],
+        ).map_err(|error| format!("Could not save downloaded episode: {error}"))?;
+        self.notify();
+        Ok(())
+    }
+
+    pub fn downloaded(&self) -> Result<Vec<DownloadedEpisode>, String> {
+        let mut statement = self.connection.prepare(
+            "SELECT show_json, episode_json, path FROM downloaded_episodes
+             ORDER BY downloaded_at DESC, rowid DESC",
+        ).map_err(|error| format!("Could not read downloaded episodes: {error}"))?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).map_err(|error| format!("Could not read downloaded episodes: {error}"))?;
+        rows.map(|row| {
+            let (show, episode, path) = row.map_err(|error| error.to_string())?;
+            Ok(DownloadedEpisode {
+                show: serde_json::from_str(&show).map_err(|error| error.to_string())?,
+                episode: serde_json::from_str(&episode).map_err(|error| error.to_string())?,
+                path: path.into(),
+            })
+        }).collect()
+    }
+
+    pub fn remove_download(&self, feed_url: &str, episode_id: &str) -> Result<Option<std::path::PathBuf>, String> {
+        let path = self.connection.query_row(
+            "SELECT path FROM downloaded_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+            params![feed_url, episode_id], |row| row.get::<_, String>(0),
+        ).optional().map_err(|error| format!("Could not find downloaded episode: {error}"))?;
+        if let Some(path) = path {
+            self.connection.execute(
+                "DELETE FROM downloaded_episodes WHERE feed_url = ?1 AND episode_id = ?2",
+                params![feed_url, episode_id],
+            ).map_err(|error| format!("Could not remove downloaded episode: {error}"))?;
+            self.notify();
+            Ok(Some(path.into()))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn clear_history(&self) -> Result<(), String> {
         self.connection.execute("DELETE FROM completed_history", [])
             .map_err(|error| format!("Could not clear playback history: {error}"))?;
@@ -439,6 +590,10 @@ impl FollowingStore {
     }
 
     fn notify(&self) {
-        self.listeners.borrow_mut().retain(|listener| listener());
+        // A listener can rebuild a page and register more listeners. Run callbacks
+        // without holding the RefCell borrow so watch() remains safe during notify.
+        let mut listeners = std::mem::take(&mut *self.listeners.borrow_mut());
+        listeners.retain(|listener| listener());
+        self.listeners.borrow_mut().splice(0..0, listeners);
     }
 }

@@ -1,12 +1,17 @@
 mod artwork;
 mod discovery;
+mod downloaded;
+mod download_manager;
 mod episode;
 mod episode_row;
 mod following;
+mod history;
 mod library_panel;
 mod new_episodes;
 mod opml_io;
 mod player;
+mod settings;
+mod starred;
 
 use adw::prelude::*;
 use gtk::glib::value::ToValue;
@@ -16,7 +21,7 @@ use crate::following::FollowingStore;
 use artwork::ArtworkLoader;
 use crate::playback::PlaybackController;
 
-pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -> gtk::Widget {
+pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application, settings: Rc<crate::settings::AppSettings>) -> gtk::Widget {
     install_styles();
     let store = match FollowingStore::open() {
         Ok(store) => store,
@@ -35,7 +40,9 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         let overlay = toast_overlay.downgrade();
         move |message| {
             if let Some(overlay) = overlay.upgrade() {
-                overlay.add_toast(adw::Toast::new(message));
+                let notice = adw::Toast::new(message);
+                notice.set_use_markup(false);
+                overlay.add_toast(notice);
             }
         }
     });
@@ -64,7 +71,8 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
             }
         }
     });
-    let playback = match PlaybackController::new(store.clone(), toast.clone()) {
+    let downloads = download_manager::DownloadManager::new(store.clone(), toast.clone(), &toast_overlay);
+    let playback = match PlaybackController::new(store.clone(), settings.clone(), toast.clone()) {
         Ok(playback) => playback,
         Err(message) => {
             return adw::StatusPage::builder()
@@ -87,12 +95,11 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     overlay.set_max_sidebar_width(380.0);
 
     let split = adw::NavigationSplitView::new();
-    split.set_min_sidebar_width(200.0);
-    split.set_max_sidebar_width(230.0);
+    split.set_min_sidebar_width(180.0);
+    split.set_max_sidebar_width(205.0);
     split.set_show_content(true);
 
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    sidebar.add_css_class("sidebar-pane");
     let sidebar_header = adw::HeaderBar::new();
     sidebar_header.add_css_class("shell-header");
     sidebar_header.set_show_start_title_buttons(false);
@@ -104,29 +111,44 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         .tooltip_text("Search podcasts")
         .build();
     sidebar_header.pack_start(&search_button);
-    sidebar_header.pack_end(&menu_button());
+    let main_menu = menu_button();
+    sidebar_header.pack_end(&main_menu);
     sidebar.append(&sidebar_header);
 
     let navigation = gtk::ListBox::new();
     navigation.add_css_class("navigation-sidebar");
     navigation.set_selection_mode(gtk::SelectionMode::Single);
-    navigation.set_margin_top(8);
-    navigation.set_margin_start(6);
-    navigation.set_margin_end(6);
-    let discover_row = navigation_row("find-location-symbolic", "Discover");
-    let following_row = navigation_row("folder-music-symbolic", "Following");
-    let episodes_row = navigation_row("view-refresh-symbolic", "New Episodes");
+    let discover_row = navigation_row("software-explore-symbolic", "Discover");
+    let following_row = navigation_row("audio-input-microphone-symbolic", "Following");
+    let episodes_row = navigation_row("application-rss+xml-symbolic", "New Episodes");
     navigation.append(&discover_row);
     navigation.append(&following_row);
     navigation.append(&episodes_row);
     navigation.select_row(Some(&discover_row));
     sidebar.append(&navigation);
+    let divider = gtk::Separator::new(gtk::Orientation::Horizontal);
+    divider.set_margin_top(3);
+    divider.set_margin_bottom(3);
+    divider.set_margin_start(12);
+    divider.set_margin_end(12);
+    sidebar.append(&divider);
+    let library_navigation = gtk::ListBox::new();
+    library_navigation.add_css_class("navigation-sidebar");
+    library_navigation.set_selection_mode(gtk::SelectionMode::Single);
+    let starred_row = navigation_row("starred-symbolic", "Starred");
+    let downloaded_row = navigation_row("folder-download-symbolic", "Downloaded");
+    let history_row = navigation_row("document-open-recent-symbolic", "History");
+    library_navigation.append(&starred_row);
+    library_navigation.append(&downloaded_row);
+    library_navigation.append(&history_row);
+    sidebar.append(&library_navigation);
     split.set_sidebar(Some(&adw::NavigationPage::new(&sidebar, "Elite Podcasts")));
 
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let main_header = adw::HeaderBar::new();
     main_header.add_css_class("shell-header");
     main_header.set_show_start_title_buttons(false);
+    main_header.set_show_back_button(false);
     let page_back = gtk::Button::from_icon_name("go-previous-symbolic");
     page_back.set_tooltip_text(Some("Back to Discover"));
     page_back.set_visible(false);
@@ -248,16 +270,35 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         spinner_for_following_back.stop();
         spinner_for_following_back.set_opacity(0.0);
     });
+    let pages_for_star_back = pages.clone();
+    let title_for_star_back = title.clone();
+    let spinner_for_star_back = spinner.clone();
+    let navigation_for_star_back = navigation.clone();
+    let library_for_star_back = library_navigation.clone();
+    let starred_for_back = starred_row.clone();
+    let episodes_menu_for_star_back = episodes_menu.clone();
+    let back_to_starred: Rc<dyn Fn()> = Rc::new(move || {
+        pages_for_star_back.set_transition_type(gtk::StackTransitionType::SlideRight);
+        pages_for_star_back.set_visible_child_name("starred");
+        navigation_for_star_back.unselect_all();
+        library_for_star_back.select_row(Some(&starred_for_back));
+        episodes_menu_for_star_back.set_visible(false);
+        title_for_star_back.set_text("Starred");
+        spinner_for_star_back.stop();
+        spinner_for_star_back.set_opacity(0.0);
+    });
     let discovery = discovery::page(
-        &entry, &page_back, &podcast_menu, &pages, status, store.clone(), artwork.clone(), playback.clone(), toast.clone(),
+        &entry, &page_back, &podcast_menu, &pages, status, store.clone(), artwork.clone(), playback.clone(), downloads.clone(), toast.clone(),
         follow_toast,
         back_to_following,
+        back_to_starred,
     );
     pages.add_named(&discovery.widget, Some("discover"));
     let pages_for_search = pages.clone();
     let navigation_for_search = navigation.clone();
     let discover_for_search = discover_row.clone();
     let search_for_submit = search_button.clone();
+    let library_for_search = library_navigation.clone();
     let title_for_search = title.clone();
     let spinner_for_search = spinner.clone();
     entry.connect_activate(move |entry| {
@@ -265,6 +306,7 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
             pages_for_search.set_transition_type(gtk::StackTransitionType::SlideLeft);
             pages_for_search.set_visible_child_name("discover");
             navigation_for_search.select_row(Some(&discover_for_search));
+            library_for_search.unselect_all();
             title_for_search.set_text("Search results");
             spinner_for_search.stop();
             spinner_for_search.set_opacity(0.0);
@@ -273,8 +315,6 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     });
     let open_followed = discovery.open_followed.clone();
     let pages_for_open_followed = pages.clone();
-    let navigation_for_open_followed = navigation.clone();
-    let discover_for_open_followed = discover_row.clone();
     let title_for_open_followed = title.clone();
     let spinner_for_open_followed = spinner.clone();
     let episodes_menu_for_open_followed = episodes_menu.clone();
@@ -283,10 +323,23 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         open_followed(show.clone());
         pages_for_open_followed.set_transition_type(gtk::StackTransitionType::SlideLeft);
         pages_for_open_followed.set_visible_child_name("discover");
-        navigation_for_open_followed.select_row(Some(&discover_for_open_followed));
         title_for_open_followed.set_text(&show.title);
         spinner_for_open_followed.stop();
         spinner_for_open_followed.set_opacity(0.0);
+    });
+    let open_starred = discovery.open_starred.clone();
+    let pages_for_open_starred = pages.clone();
+    let title_for_open_starred = title.clone();
+    let spinner_for_open_starred = spinner.clone();
+    let episodes_menu_for_open_starred = episodes_menu.clone();
+    let open_from_starred: Rc<dyn Fn(crate::discovery_service::Show)> = Rc::new(move |show| {
+        episodes_menu_for_open_starred.set_visible(false);
+        open_starred(show.clone());
+        pages_for_open_starred.set_transition_type(gtk::StackTransitionType::SlideLeft);
+        pages_for_open_starred.set_visible_child_name("discover");
+        title_for_open_starred.set_text(&show.title);
+        spinner_for_open_starred.stop();
+        spinner_for_open_starred.set_opacity(0.0);
     });
     pages.add_named(&following::page(store.clone(), artwork.clone(), open_from_following.clone()), Some("following"));
     let weak_pages = pages.downgrade();
@@ -311,12 +364,24 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         }
     });
     let new_page = new_episodes::page(
-        store.clone(), playback.clone(), toast.clone(), episodes_busy,
+        store.clone(), playback.clone(), downloads.clone(), toast.clone(), episodes_busy,
         open_from_following.clone(),
     );
     let restore_new_episodes = new_page.restore.clone();
     pages.add_named(&new_page.widget, Some("new-episodes"));
+    let starred_page = starred::page(store.clone(), artwork.clone(), open_from_starred);
+    let reset_starred = starred_page.refresh.clone();
+    pages.add_named(&starred_page.widget, Some("starred"));
+    let downloaded_page = downloaded::page(store.clone(), playback.clone(), downloads.clone(), toast.clone());
+    let refresh_downloaded = downloaded_page.refresh.clone();
+    pages.add_named(&downloaded_page.widget, Some("downloaded"));
+    let history_page = history::page(
+        store.clone(), playback.clone(), downloads.clone(), toast.clone(), open_from_following.clone(),
+    );
+    let refresh_history = history_page.refresh.clone();
+    pages.add_named(&history_page.widget, Some("history"));
     setup_episodes_menu(window, app, &pages, &episodes_menu, new_page.refresh, store, toast.clone());
+    setup_main_menu(window, app, &main_menu, settings.clone(), toast.clone());
     let episodes_menu_for_page = episodes_menu.clone();
     pages.connect_visible_child_name_notify(move |pages| {
         episodes_menu_for_page.set_visible(pages.visible_child_name().as_deref() == Some("new-episodes"));
@@ -334,8 +399,10 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
     let back_for_navigation = page_back.clone();
     let menu_for_navigation = podcast_menu.clone();
     let episodes_menu_for_navigation = episodes_menu.clone();
+    let library_for_navigation = library_navigation.clone();
     navigation.connect_row_activated(move |list, row| {
         list.select_row(Some(row));
+        library_for_navigation.unselect_all();
         match row.index() {
             0 => {
                 reset_discovery();
@@ -378,6 +445,42 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
         split_for_navigation.set_show_content(true);
     });
 
+    let pages_for_library = pages.clone();
+    let title_for_library = title.clone();
+    let spinner_for_library = spinner.clone();
+    let search_for_library = search_button.clone();
+    let back_for_library = page_back.clone();
+    let menu_for_library = podcast_menu.clone();
+    let episodes_menu_for_library = episodes_menu.clone();
+    let navigation_for_library = navigation.clone();
+    let split_for_library = split.clone();
+    let refresh_downloaded_for_library = refresh_downloaded.clone();
+    library_navigation.connect_row_activated(move |list, row| {
+        list.select_row(Some(row));
+        navigation_for_library.unselect_all();
+        search_for_library.set_active(false);
+        back_for_library.set_visible(false);
+        menu_for_library.set_visible(false);
+        episodes_menu_for_library.set_visible(false);
+        spinner_for_library.stop();
+        spinner_for_library.set_opacity(0.0);
+        pages_for_library.set_transition_type(gtk::StackTransitionType::SlideLeft);
+        if row.index() == 0 {
+            reset_starred();
+            pages_for_library.set_visible_child_name("starred");
+            title_for_library.set_text("Starred");
+        } else if row.index() == 1 {
+            refresh_downloaded_for_library();
+            pages_for_library.set_visible_child_name("downloaded");
+            title_for_library.set_text("Downloaded");
+        } else {
+            refresh_history();
+            pages_for_library.set_visible_child_name("history");
+            title_for_library.set_text("History");
+        }
+        split_for_library.set_show_content(true);
+    });
+
     let sidebar_header_for_breakpoint = sidebar_header.clone();
     let show_sidebar_for_breakpoint = show_sidebar.clone();
     let back_for_breakpoint = page_back.clone();
@@ -416,7 +519,7 @@ pub fn window_content(window: &adw::ApplicationWindow, app: &adw::Application) -
             overlay.set_show_sidebar(false);
         }
     });
-    layout.append(&player::bar(playback.clone(), artwork.clone(), toast.clone(), open_panel));
+    layout.append(&player::bar(playback.clone(), artwork.clone(), settings.clone(), toast.clone(), open_panel));
     overlay.set_content(Some(&layout));
     overlay.set_sidebar(Some(&library_panel::panel(playback, toast, close_panel)));
     toast_overlay.set_child(Some(&overlay));
@@ -456,39 +559,51 @@ pub(super) fn queue_button_with_indicator(
 
 fn navigation_row(icon: &str, label: &str) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
-    row.add_css_class("sidebar-row");
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    content.set_margin_start(10);
-    content.set_margin_end(10);
-    content.set_margin_top(8);
-    content.set_margin_bottom(8);
-    content.append(&gtk::Image::from_icon_name(icon));
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    content.set_margin_start(6);
+    content.set_margin_end(6);
+    let image = gtk::Image::from_icon_name(icon);
+    image.add_css_class("sidebar-icon");
+    image.set_margin_end(8);
+    content.append(&image);
     let text = gtk::Label::new(Some(label));
     text.set_halign(gtk::Align::Start);
+    text.set_hexpand(true);
+    text.set_xalign(0.0);
+    text.set_ellipsize(gtk::pango::EllipsizeMode::End);
     content.append(&text);
     row.set_child(Some(&content));
     row
 }
 
 fn menu_button() -> gtk::MenuButton {
-    let menu = gtk::MenuButton::builder()
+    gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
         .tooltip_text("Main menu")
-        .build();
-    let popover = gtk::Popover::new();
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-    content.set_margin_top(8);
-    content.set_margin_bottom(8);
-    content.set_margin_start(8);
-    content.set_margin_end(8);
-    for label in ["About Elite Podcasts", "Keyboard Shortcuts"] {
-        let row = gtk::Button::with_label(label);
-        row.add_css_class("flat");
-        content.append(&row);
-    }
-    popover.set_child(Some(&content));
-    menu.set_popover(Some(&popover));
-    menu
+        .build()
+}
+
+fn setup_main_menu(
+    window: &adw::ApplicationWindow,
+    app: &adw::Application,
+    button: &gtk::MenuButton,
+    settings: Rc<crate::settings::AppSettings>,
+    toast: Rc<dyn Fn(&str)>,
+) {
+    let action = gtk::gio::SimpleAction::new("show-settings", None);
+    let weak_window = window.downgrade();
+    action.connect_activate(move |_, _| {
+        if let Some(window) = weak_window.upgrade() {
+            settings::present(&window, settings.clone(), toast.clone());
+        }
+    });
+    window.add_action(&action);
+    app.set_accels_for_action("win.show-settings", &["<Primary>comma"]);
+    let menu = gtk::gio::Menu::new();
+    menu.append(Some("Settings"), Some("win.show-settings"));
+    menu.append(Some("Keyboard Shortcuts"), Some("win.show-shortcuts"));
+    menu.append(Some("About Elite Podcasts"), Some("win.show-about"));
+    button.set_menu_model(Some(&menu));
 }
 
 fn setup_episodes_menu(
@@ -558,6 +673,7 @@ fn show_shortcuts(window: &adw::ApplicationWindow) {
     body.set_margin_start(24);
     body.set_margin_end(24);
     for (label, keys) in [
+        ("Settings", "<Primary>comma"),
         ("Check for New Episodes", "<Primary>r"),
         ("Import Shows", "<Primary>o"),
         ("Export Shows", "<Primary>e"),

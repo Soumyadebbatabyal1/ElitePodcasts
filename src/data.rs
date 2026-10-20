@@ -10,6 +10,17 @@ pub const CATEGORIES: [(&str, &str, &str); 9] = [
     ("x-office-presentation-symbolic", "Business", "indigo"),
 ];
 
+pub const RECOMMENDATION_GENRES: [(&str, u32); 20] = [
+    ("Arts", 1301), ("Business", 1321), ("Comedy", 1303),
+    ("Education", 1304), ("Fiction", 1483), ("Government", 1511),
+    ("Health & Fitness", 1512), ("History", 1487), ("Kids & Family", 1305),
+    ("Leisure", 1502), ("Music", 1310), ("News", 1489),
+    ("Religion & Spirituality", 1314), ("Science", 1533),
+    ("Society & Culture", 1324), ("Sports", 1545),
+    ("Technology", 1318), ("TV & Film", 1309), ("True Crime", 1488),
+    ("Earth Sciences", 1540),
+];
+
 type Subcategory = (&'static str, u32);
 
 const ARTS: &[Subcategory] = &[

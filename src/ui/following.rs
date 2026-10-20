@@ -17,11 +17,12 @@ pub(super) fn page(
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
         .build();
-    let clamp = adw::Clamp::builder().maximum_size(1200).build();
+    let clamp = adw::Clamp::builder().maximum_size(1200).vexpand(true).build();
     clamp.set_margin_start(16);
     clamp.set_margin_end(16);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.set_hexpand(true);
+    content.set_vexpand(true);
     content.set_margin_top(20);
     content.set_margin_bottom(24);
     clamp.set_child(Some(&content));

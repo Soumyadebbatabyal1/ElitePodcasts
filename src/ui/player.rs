@@ -5,10 +5,23 @@ use std::rc::Rc;
 
 use super::artwork::ArtworkLoader;
 use crate::playback::PlaybackController;
+use crate::settings::AppSettings;
+
+fn update_skip_button(button: &gtk::Button, seconds: i64, backward: bool) {
+    let icon = match (backward, seconds) {
+        (true, 10) => "skip-backwards-10-symbolic",
+        (false, 10) => "skip-forward-10-symbolic",
+        (true, _) => "media-seek-backward-symbolic",
+        (false, _) => "media-seek-forward-symbolic",
+    };
+    button.set_icon_name(icon);
+    button.set_tooltip_text(Some(&format!("{} {seconds} seconds", if backward { "Back" } else { "Forward" })));
+}
 
 pub(super) fn bar(
     playback: Rc<PlaybackController>,
     artwork: Rc<ArtworkLoader>,
+    settings: Rc<AppSettings>,
     toast: Rc<dyn Fn(&str)>,
     open_panel: Rc<dyn Fn()>,
 ) -> gtk::Widget {
@@ -24,13 +37,19 @@ pub(super) fn bar(
     let rewind = gtk::Button::from_icon_name("skip-backwards-10-symbolic");
     rewind.add_css_class("flat");
     rewind.add_css_class("player-skip-button");
-    rewind.set_tooltip_text(Some("Back 10 seconds"));
+    update_skip_button(&rewind, settings.skip_backward_seconds(), true);
+    let rewind_for_setting = rewind.clone();
+    let settings_for_rewind_change = settings.clone();
+    settings.values().connect_changed(Some("skip-backward-seconds"), move |_, _| {
+        update_skip_button(&rewind_for_setting, settings_for_rewind_change.skip_backward_seconds(), true);
+    });
     rewind.set_size_request(34, 34);
     rewind.set_valign(gtk::Align::Center);
     let playback_for_rewind = playback.clone();
+    let settings_for_rewind = settings.clone();
     let toast_for_rewind = toast.clone();
     rewind.connect_clicked(move |_| {
-        if let Err(error) = playback_for_rewind.seek_relative(-10) {
+        if let Err(error) = playback_for_rewind.seek_relative(-settings_for_rewind.skip_backward_seconds()) {
             toast_for_rewind(&error);
         }
     });
@@ -53,13 +72,19 @@ pub(super) fn bar(
     let forward = gtk::Button::from_icon_name("skip-forward-10-symbolic");
     forward.add_css_class("flat");
     forward.add_css_class("player-skip-button");
-    forward.set_tooltip_text(Some("Forward 10 seconds"));
+    update_skip_button(&forward, settings.skip_forward_seconds(), false);
+    let forward_for_setting = forward.clone();
+    let settings_for_forward_change = settings.clone();
+    settings.values().connect_changed(Some("skip-forward-seconds"), move |_, _| {
+        update_skip_button(&forward_for_setting, settings_for_forward_change.skip_forward_seconds(), false);
+    });
     forward.set_size_request(34, 34);
     forward.set_valign(gtk::Align::Center);
     let playback_for_forward = playback.clone();
+    let settings_for_forward = settings.clone();
     let toast_for_forward = toast.clone();
     forward.connect_clicked(move |_| {
-        if let Err(error) = playback_for_forward.seek_relative(10) {
+        if let Err(error) = playback_for_forward.seek_relative(settings_for_forward.skip_forward_seconds()) {
             toast_for_forward(&error);
         }
     });

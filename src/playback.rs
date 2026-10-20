@@ -38,6 +38,7 @@ pub struct PlaybackController {
     player: gst::Element,
     bus: gst::Bus,
     store: Rc<FollowingStore>,
+    settings: Rc<crate::settings::AppSettings>,
     current: RefCell<Option<PlayingEpisode>>,
     queue: RefCell<VecDeque<QueuedEpisode>>,
     library_revision: Cell<u64>,
@@ -57,7 +58,7 @@ pub struct PlaybackController {
 }
 
 impl PlaybackController {
-    pub fn new(store: Rc<FollowingStore>, toast: Rc<dyn Fn(&str)>) -> Result<Rc<Self>, String> {
+    pub fn new(store: Rc<FollowingStore>, settings: Rc<crate::settings::AppSettings>, toast: Rc<dyn Fn(&str)>) -> Result<Rc<Self>, String> {
         gst::init().map_err(|error| format!("Could not initialize audio playback: {error}"))?;
         let player = gst::ElementFactory::make("playbin")
             .build()
@@ -73,10 +74,12 @@ impl PlaybackController {
                 (None, 1.0)
             }
         };
-        let rate = if saved_rate.is_finite() && (0.5..=2.0).contains(&saved_rate) {
+        let rate = if saved_episode.is_none() {
+            settings.default_speed()
+        } else if saved_rate.is_finite() && (0.5..=2.0).contains(&saved_rate) {
             saved_rate
         } else {
-            1.0
+            settings.default_speed()
         };
         let current = saved_episode
             .filter(|(_, episode)| episode.audio_url.is_some())
@@ -90,6 +93,7 @@ impl PlaybackController {
             player,
             bus,
             store,
+            settings,
             current: RefCell::new(current),
             queue: RefCell::new(VecDeque::new()),
             library_revision: Cell::new(0),
@@ -305,6 +309,9 @@ impl PlaybackController {
 
     fn start_episode(&self, show: &Show, episode: &Episode, restart: bool) -> Result<(), String> {
         let uri = episode.audio_url.as_deref().ok_or("This episode has no audio source")?;
+        let different_episode = self.current.borrow().as_ref().is_none_or(|current| {
+            current.feed_url != show.feed_url || current.episode.id != episode.id
+        });
         self.save_position();
         self.player
             .set_state(gst::State::Null)
@@ -319,6 +326,9 @@ impl PlaybackController {
             saved
         };
         *self.current.borrow_mut() = Some(PlayingEpisode::new(show.clone(), episode.clone()));
+        if different_episode {
+            self.rate.set(self.settings.default_speed());
+        }
         self.position.set(0);
         self.duration.set(duration);
         self.pending_resume.set(resume);

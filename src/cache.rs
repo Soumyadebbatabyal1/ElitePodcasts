@@ -7,6 +7,15 @@ use std::time::Duration;
 
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
+pub fn clear_all() -> Result<(), String> {
+    let directory = gtk::glib::user_cache_dir().join("elite-podcasts");
+    match std::fs::remove_dir_all(directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not clear cache: {error}")),
+    }
+}
+
 fn path(kind: &str, key: &str) -> PathBuf {
     let digest = Sha1::digest(key.as_bytes());
     gtk::glib::user_cache_dir()

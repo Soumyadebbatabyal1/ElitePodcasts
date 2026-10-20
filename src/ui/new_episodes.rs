@@ -7,6 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use super::episode::{parse_date, show_dialog};
+use super::download_manager::DownloadManager;
 use crate::cache;
 use crate::discovery_service::{self, Episode, Show};
 use crate::following::FollowingStore;
@@ -39,6 +40,8 @@ struct EpisodeList {
     rows: HashMap<(String, String), RowRecord>,
     status: Option<gtk::Widget>,
     playback: Rc<PlaybackController>,
+    downloads: Rc<DownloadManager>,
+    store: Rc<FollowingStore>,
     toast: Rc<dyn Fn(&str)>,
     open_show: Rc<dyn Fn(Show)>,
 }
@@ -46,7 +49,9 @@ struct EpisodeList {
 impl EpisodeList {
     fn new(
         content: &gtk::Box,
+        store: Rc<FollowingStore>,
         playback: Rc<PlaybackController>,
+        downloads: Rc<DownloadManager>,
         toast: Rc<dyn Fn(&str)>,
         open_show: Rc<dyn Fn(Show)>,
     ) -> Self {
@@ -86,7 +91,7 @@ impl EpisodeList {
         }
         Self {
             content: content.clone(), groups, rows: HashMap::new(), status: None,
-            playback, toast, open_show,
+            playback, downloads, store, toast, open_show,
         }
     }
 
@@ -105,6 +110,7 @@ impl EpisodeList {
             .icon_name("media-playlist-repeat-symbolic")
             .title(title)
             .description(description)
+            .vexpand(true)
             .build()
             .upcast();
         self.content.append(&status);
@@ -125,7 +131,7 @@ impl EpisodeList {
             .filter(|row| row.group == group_index && row.published >= timestamp)
             .count() as i32;
         let (row, over, _) = super::episode_row::create(
-            &saved.show, &saved.episode, &self.playback,
+            &saved.show, &saved.episode, &self.store, &self.playback, &self.downloads,
             &self.toast, Some(self.open_show.clone()),
         );
         group.details.borrow_mut().insert(
@@ -206,14 +212,16 @@ pub(super) struct NewEpisodesPage {
 pub(super) fn page(
     store: Rc<FollowingStore>,
     playback: Rc<PlaybackController>,
+    downloads: Rc<DownloadManager>,
     toast: Rc<dyn Fn(&str)>,
     busy: Rc<dyn Fn(bool)>,
     open_show: Rc<dyn Fn(Show)>,
 ) -> NewEpisodesPage {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.set_vexpand(true);
     content.set_margin_top(20);
     content.set_margin_bottom(28);
-    let clamp = adw::Clamp::builder().maximum_size(700).build();
+    let clamp = adw::Clamp::builder().maximum_size(700).vexpand(true).build();
     clamp.set_margin_start(16);
     clamp.set_margin_end(16);
     clamp.set_child(Some(&content));
@@ -223,7 +231,7 @@ pub(super) fn page(
         .child(&clamp)
         .build();
     let list = Rc::new(RefCell::new(EpisodeList::new(
-        &content, playback, toast.clone(), open_show,
+        &content, store.clone(), playback, downloads, toast.clone(), open_show,
     )));
     let restored_once = Rc::new(Cell::new(false));
     let load_generation = Rc::new(Cell::new(0u64));
@@ -453,7 +461,7 @@ pub(super) fn page(
     NewEpisodesPage { widget: scroller.upcast(), refresh, restore }
 }
 
-fn date_group(published: Option<&gtk::glib::DateTime>, now: Option<&gtk::glib::DateTime>) -> usize {
+pub(super) fn date_group(published: Option<&gtk::glib::DateTime>, now: Option<&gtk::glib::DateTime>) -> usize {
     let (Some(published), Some(now)) = (published, now) else {
         return 4;
     };
