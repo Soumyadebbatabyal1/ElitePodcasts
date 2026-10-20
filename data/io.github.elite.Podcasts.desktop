@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Elite Podcasts
+Comment=Discover and listen to podcasts
+Exec=elite-podcasts
+Icon=io.github.elite.Podcasts
+Terminal=false
+Categories=AudioVideo;Audio;Network;

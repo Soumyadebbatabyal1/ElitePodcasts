@@ -21,6 +21,8 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed=assets/icons/scalable/actions/{icon}");
     }
+    println!("cargo:rerun-if-changed=assets/icons/scalable/apps/io.github.elite.Podcasts.svg");
+    println!("cargo:rerun-if-changed=assets/icons/scalable/apps/io.github.elite.Podcasts-symbolic.svg");
     let schemas = Command::new("glib-compile-schemas")
         .args(["--strict", "--targetdir"])
         .arg(&out_dir)

@@ -643,8 +643,12 @@ fn setup_episodes_menu(
         if let Some(window) = weak_window.upgrade() {
             adw::AboutDialog::builder()
                 .application_name("Elite Podcasts")
+                .application_icon("io.github.elite.Podcasts")
                 .version(env!("CARGO_PKG_VERSION"))
                 .developer_name("Elite Podcasts contributors")
+                .developers(["Elite Podcasts contributors"])
+                .comments("Discover, follow, and listen to podcasts.")
+                .license_type(gtk::License::Gpl30)
                 .build()
                 .present(Some(&window));
         }

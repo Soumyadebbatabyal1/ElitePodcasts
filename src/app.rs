@@ -16,9 +16,11 @@ pub fn run() {
             gtk::IconTheme::for_display(&display)
                 .add_resource_path("/io/github/elite/Podcasts/icons");
         }
+        gtk::Window::set_default_icon_name("io.github.elite.Podcasts");
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Elite Podcasts")
+            .icon_name("io.github.elite.Podcasts")
             .default_width(1200)
             .default_height(680)
             .build();
